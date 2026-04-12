@@ -1,12 +1,15 @@
+use std::fs::File;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
 /// Spawns a line reader that sends each line through the channel.
-/// For stdin mode, reads from stdin. For command mode, spawns the command and reads its stdout.
+/// For stdin mode, reads from the given file (or tokio::stdin if None).
+/// For command mode, spawns the command and reads its stdout.
 pub fn spawn_line_reader(
     command: Option<Vec<String>>,
+    stdin_file: Option<File>,
 ) -> (mpsc::UnboundedReceiver<String>, Option<Child>) {
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -28,9 +31,17 @@ pub fn spawn_line_reader(
             (rx, Some(child))
         }
         None => {
-            let stdin = tokio::io::stdin();
-            let reader = BufReader::new(stdin);
-            tokio::spawn(read_lines(reader, tx));
+            match stdin_file {
+                Some(file) => {
+                    let async_file = tokio::fs::File::from_std(file);
+                    let reader = BufReader::new(async_file);
+                    tokio::spawn(read_lines(reader, tx));
+                }
+                None => {
+                    let reader = BufReader::new(tokio::io::stdin());
+                    tokio::spawn(read_lines(reader, tx));
+                }
+            }
             (rx, None)
         }
     }

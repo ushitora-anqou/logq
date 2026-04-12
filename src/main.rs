@@ -2,7 +2,9 @@ mod app;
 mod highlight;
 mod input;
 
+use std::fs::File;
 use std::io;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 
 use app::App;
 use clap::Parser;
@@ -20,6 +22,35 @@ struct Cli {
     command: Vec<String>,
 }
 
+/// When stdin is a pipe, dup it to a new fd and replace fd 0 with /dev/tty.
+/// This allows crossterm to read keyboard events from /dev/tty while we
+/// read data from the original stdin via the returned File.
+fn redirect_stdin_to_tty() -> io::Result<Option<File>> {
+    if unsafe { libc::isatty(0) } == 1 {
+        return Ok(None);
+    }
+
+    // Save original stdin to a new fd
+    let saved_fd = unsafe { libc::dup(0) };
+    if saved_fd == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let saved_stdin = unsafe { File::from_raw_fd(saved_fd) };
+
+    // Open /dev/tty and replace fd 0
+    let tty = File::open("/dev/tty").map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            "failed to open /dev/tty: logq requires a terminal when reading from a pipe",
+        )
+    })?;
+    if unsafe { libc::dup2(tty.as_raw_fd(), 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(Some(saved_stdin))
+}
+
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
@@ -29,8 +60,10 @@ fn main() -> io::Result<()> {
         Some(cli.command)
     };
 
+    let saved_stdin = redirect_stdin_to_tty()?;
+
     let mut terminal = ratatui::init();
-    let (rx, _child) = input::spawn_line_reader(command);
+    let (rx, _child) = input::spawn_line_reader(command, saved_stdin);
 
     let mut app = App::new(cli.max_lines);
     let result = run_app(&mut terminal, &mut app, rx);
