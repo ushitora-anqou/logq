@@ -62,6 +62,9 @@ fn main() -> io::Result<()> {
         return run_json_mode(cli.max_lines);
     }
 
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let _guard = rt.enter();
+
     let command = if cli.command.is_empty() {
         None
     } else {
