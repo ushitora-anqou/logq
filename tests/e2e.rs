@@ -1,5 +1,6 @@
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(serde::Deserialize)]
 struct AppState {
@@ -150,4 +151,42 @@ fn test_detail_scroll() {
     assert_eq!(states[1].detail_scroll, 0);
     // C-d scrolls by half visible height (12)
     assert!(states[2].detail_scroll > 0);
+}
+
+#[test]
+fn test_tui_mode_with_command_no_panic() {
+    let bin = env!("CARGO_BIN_EXE_logq");
+    let mut child = Command::new("script")
+        .args(["-qec", &format!("{} -- echo hello", bin), "/dev/null"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn script");
+
+    drop(child.stdin.take());
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(2);
+
+    loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => {
+                assert_ne!(
+                    status.code(),
+                    Some(101),
+                    "logq panicked (possible 'no reactor' error)"
+                );
+                return;
+            }
+            None if start.elapsed() > timeout => {
+                child.kill().expect("kill");
+                let _ = child.wait();
+                return;
+            }
+            None => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
 }
