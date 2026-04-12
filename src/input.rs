@@ -54,8 +54,8 @@ async fn read_lines<R: AsyncBufReadExt + Unpin>(reader: R, tx: mpsc::UnboundedSe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::BufReader;
     use std::io::Cursor;
+    use tokio::io::BufReader;
 
     #[tokio::test]
     async fn test_read_lines() {

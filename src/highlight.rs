@@ -37,10 +37,7 @@ pub fn highlight_line(line: &str, colors: &HighlightColors) -> Text<'static> {
                 .collect();
             Text::from(lines)
         }
-        Err(_) => Text::from(Line::from(Span::styled(
-            line.to_string(),
-            Style::default(),
-        ))),
+        Err(_) => Text::from(Line::from(Span::styled(line.to_string(), Style::default()))),
     }
 }
 
@@ -76,7 +73,11 @@ fn highlight_json_line(line: &str, colors: &HighlightColors) -> Line<'static> {
             in_key = rest.starts_with('"');
             continue;
         }
-        if rest.starts_with('{') || rest.starts_with('}') || rest.starts_with('[') || rest.starts_with(']') {
+        if rest.starts_with('{')
+            || rest.starts_with('}')
+            || rest.starts_with('[')
+            || rest.starts_with(']')
+        {
             spans.push(Span::styled(
                 rest[..1].to_string(),
                 Style::default().fg(colors.punctuation),
@@ -90,10 +91,7 @@ fn highlight_json_line(line: &str, colors: &HighlightColors) -> Line<'static> {
             let end = find_string_end(rest);
             let s = &rest[..end];
             if in_key {
-                spans.push(Span::styled(
-                    s.to_string(),
-                    Style::default().fg(colors.key),
-                ));
+                spans.push(Span::styled(s.to_string(), Style::default().fg(colors.key)));
             } else {
                 spans.push(Span::styled(
                     s.to_string(),
@@ -116,10 +114,7 @@ fn highlight_json_line(line: &str, colors: &HighlightColors) -> Line<'static> {
         } else {
             colors.number
         };
-        spans.push(Span::styled(
-            token.to_string(),
-            Style::default().fg(color),
-        ));
+        spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
         rest = rest[end..].trim_start();
     }
 
@@ -169,10 +164,7 @@ mod tests {
     #[test]
     fn test_highlight_nested_json() {
         let colors = HighlightColors::default();
-        let text = highlight_line(
-            "{\"outer\":{\"inner\":\"value\"},\"arr\":[1,2]}",
-            &colors,
-        );
+        let text = highlight_line("{\"outer\":{\"inner\":\"value\"},\"arr\":[1,2]}", &colors);
         assert!(text.lines.len() > 3);
     }
 

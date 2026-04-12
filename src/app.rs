@@ -1,13 +1,13 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
-use crate::highlight::{highlight_line, HighlightColors};
+use crate::highlight::{HighlightColors, highlight_line};
 
 const DOUBLE_CTRL_C_INTERVAL_MS: u64 = 500;
 
@@ -103,8 +103,8 @@ impl App {
             .iter()
             .position(|&i| i == self.selected)
             .unwrap_or(0);
-        let new_pos = (current_pos as isize + delta)
-            .clamp(0, (filtered.len() as isize) - 1) as usize;
+        let new_pos =
+            (current_pos as isize + delta).clamp(0, (filtered.len() as isize) - 1) as usize;
         self.selected = filtered[new_pos];
         self.auto_scroll = self.selected == filtered[filtered.len() - 1];
         self.ensure_selection_visible(visible_height);
@@ -141,11 +141,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(input) = self.filter_input.take() {
-                    self.filter = if input.is_empty() {
-                        None
-                    } else {
-                        Some(input)
-                    };
+                    self.filter = if input.is_empty() { None } else { Some(input) };
                 }
                 let filtered = self.filtered_indices();
                 if !filtered.is_empty() {
@@ -170,12 +166,7 @@ impl App {
         }
     }
 
-    fn handle_list_key(
-        &mut self,
-        code: KeyCode,
-        modifiers: KeyModifiers,
-        visible_height: usize,
-    ) {
+    fn handle_list_key(&mut self, code: KeyCode, modifiers: KeyModifiers, visible_height: usize) {
         let filtered = self.filtered_indices();
         let max_idx = filtered.len().saturating_sub(1);
 
@@ -225,12 +216,7 @@ impl App {
         }
     }
 
-    fn handle_detail_key(
-        &mut self,
-        code: KeyCode,
-        modifiers: KeyModifiers,
-        visible_height: usize,
-    ) {
+    fn handle_detail_key(&mut self, code: KeyCode, modifiers: KeyModifiers, visible_height: usize) {
         match (code, modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.handle_ctrl_c();
@@ -253,12 +239,10 @@ impl App {
                 self.detail_scroll = self.detail_scroll.saturating_sub(half);
             }
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                self.detail_scroll =
-                    self.detail_scroll.saturating_add(visible_height as u16);
+                self.detail_scroll = self.detail_scroll.saturating_add(visible_height as u16);
             }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                self.detail_scroll =
-                    self.detail_scroll.saturating_sub(visible_height as u16);
+                self.detail_scroll = self.detail_scroll.saturating_sub(visible_height as u16);
             }
             (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
                 self.detail_scroll = self.detail_scroll.saturating_add(1);
@@ -285,10 +269,7 @@ impl App {
         let area = frame.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
             .split(area);
 
         match self.view_mode {
@@ -325,10 +306,11 @@ impl App {
                         .map(|span| {
                             Span::styled(
                                 span.content,
-                                span.style
-                                    .patch(Style::default()
+                                span.style.patch(
+                                    Style::default()
                                         .bg(Color::DarkGray)
-                                        .add_modifier(Modifier::BOLD)),
+                                        .add_modifier(Modifier::BOLD),
+                                ),
                             )
                         })
                         .collect();
@@ -375,17 +357,13 @@ impl App {
                     )
                 }
             }
-            ViewMode::Detail => {
-                "Backspace:back  j/k,C-d/u/f/b/e/y:scroll  C-c×2:quit".to_string()
-            }
+            ViewMode::Detail => "Backspace:back  j/k,C-d/u/f/b/e/y:scroll  C-c×2:quit".to_string(),
         };
 
-        let status = Paragraph::new(Line::from(vec![
-            Span::styled(
-                status_text,
-                Style::default().fg(Color::White).bg(Color::DarkGray),
-            ),
-        ]));
+        let status = Paragraph::new(Line::from(vec![Span::styled(
+            status_text,
+            Style::default().fg(Color::White).bg(Color::DarkGray),
+        )]));
         frame.render_widget(status, area);
     }
 
@@ -433,14 +411,16 @@ fn highlight_display_line(
             // Heuristic: if followed by ':', it's a key
             let after = rest[end..].trim_start();
             let is_key = after.starts_with(':');
-            let color = if is_key {
-                colors.key
-            } else {
-                colors.string
-            };
+            let color = if is_key { colors.key } else { colors.string };
             spans.push(Span::styled(s.to_string(), Style::default().fg(color)));
             rest = &rest[end..];
-        } else if rest.starts_with(':') || rest.starts_with(',') || rest.starts_with('{') || rest.starts_with('}') || rest.starts_with('[') || rest.starts_with(']') {
+        } else if rest.starts_with(':')
+            || rest.starts_with(',')
+            || rest.starts_with('{')
+            || rest.starts_with('}')
+            || rest.starts_with('[')
+            || rest.starts_with(']')
+        {
             spans.push(Span::styled(
                 rest[..1].to_string(),
                 Style::default().fg(colors.punctuation),
@@ -461,10 +441,7 @@ fn highlight_display_line(
             } else {
                 Color::White
             };
-            spans.push(Span::styled(
-                token.to_string(),
-                Style::default().fg(color),
-            ));
+            spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
             rest = &rest[end..];
         }
     }
