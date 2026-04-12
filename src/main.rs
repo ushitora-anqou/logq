@@ -17,6 +17,10 @@ struct Cli {
     #[arg(long, default_value = "10000")]
     max_lines: usize,
 
+    /// Output app state as NDJSON after each input line (for testing)
+    #[arg(long)]
+    json_output: bool,
+
     /// Command to execute (prefix with --)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
@@ -53,6 +57,10 @@ fn redirect_stdin_to_tty() -> io::Result<Option<File>> {
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+
+    if cli.json_output {
+        return run_json_mode(cli.max_lines);
+    }
 
     let command = if cli.command.is_empty() {
         None
@@ -96,4 +104,61 @@ fn run_app(
             app.handle_event(event, area);
         }
     }
+}
+
+fn parse_cmd_event(cmd: &str) -> Option<crossterm::event::Event> {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let (key, modifiers) = if let Some(rest) = cmd.strip_prefix("C-") {
+        let c = rest.chars().next()?;
+        (KeyCode::Char(c), KeyModifiers::CONTROL)
+    } else {
+        match cmd {
+            "Enter" => (KeyCode::Enter, KeyModifiers::NONE),
+            "Esc" => (KeyCode::Esc, KeyModifiers::NONE),
+            "Backspace" => (KeyCode::Backspace, KeyModifiers::NONE),
+            "Up" => (KeyCode::Up, KeyModifiers::NONE),
+            "Down" => (KeyCode::Down, KeyModifiers::NONE),
+            "Tab" => (KeyCode::Tab, KeyModifiers::NONE),
+            s if s.len() == 1 => {
+                let c = s.chars().next()?;
+                (KeyCode::Char(c), KeyModifiers::NONE)
+            }
+            _ => return None,
+        }
+    };
+
+    Some(Event::Key(KeyEvent::new(key, modifiers)))
+}
+
+fn run_json_mode(max_lines: usize) -> io::Result<()> {
+    use std::io::{BufRead, Write};
+
+    let mut app = App::new(max_lines);
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if let Some(cmd) = line.strip_prefix("CMD:") {
+            if let Some(event) = parse_cmd_event(cmd) {
+                app.handle_event(event, area);
+            }
+        } else {
+            app.add_line(line);
+        }
+
+        let state = app.snapshot();
+        let json = serde_json::to_string(&state).unwrap();
+        writeln!(stdout, "{}", json)?;
+        stdout.flush()?;
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    Ok(())
 }

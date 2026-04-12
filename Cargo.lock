@@ -695,6 +695,7 @@ dependencies = [
  "crossterm",
  "libc",
  "ratatui",
+ "serde",
  "serde_json",
  "tokio",
 ]

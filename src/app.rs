@@ -11,10 +11,26 @@ use crate::highlight::{HighlightColors, highlight_line};
 
 const DOUBLE_CTRL_C_INTERVAL_MS: u64 = 500;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ViewMode {
     List,
     Detail,
+}
+
+#[derive(serde::Serialize)]
+pub struct AppState {
+    pub lines: Vec<String>,
+    pub view_mode: ViewMode,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub filter: Option<String>,
+    pub auto_scroll: bool,
+    pub detail_scroll: u16,
+    pub filter_input: Option<String>,
+    pub should_quit: bool,
+    pub total_lines: usize,
+    pub filtered_count: usize,
 }
 
 pub struct App {
@@ -63,6 +79,22 @@ impl App {
             if !filtered.is_empty() {
                 self.selected = filtered.len() - 1;
             }
+        }
+    }
+
+    pub fn snapshot(&self) -> AppState {
+        AppState {
+            lines: self.lines.clone(),
+            view_mode: self.view_mode.clone(),
+            selected: self.selected,
+            scroll_offset: self.scroll_offset,
+            filter: self.filter.clone(),
+            auto_scroll: self.auto_scroll,
+            detail_scroll: self.detail_scroll,
+            filter_input: self.filter_input.clone(),
+            should_quit: self.should_quit,
+            total_lines: self.lines.len(),
+            filtered_count: self.filtered_indices().len(),
         }
     }
 
