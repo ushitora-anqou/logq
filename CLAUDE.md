@@ -40,7 +40,7 @@ stdin/command → input.rs (tokio spawn) → mpsc channel → main loop (try_rec
 
 - **TTY redirect**: When stdin is a pipe, `dup(0)` saves it and `dup2(tty, 0)` replaces fd 0 with `/dev/tty` so crossterm can read keyboard input while data comes from the pipe.
 - **Auto-scroll**: Tracks whether the user is at the latest line. `G` re-enables auto-scroll; any manual navigation away from the last line disables it.
-- **Filter with negation**: `!pattern` prefix sets `filter_negated=true`, inverting the regex match. Invalid regex falls back to literal `contains()`.
+- **Filter query language**: After `/`, users type structured queries like `|= "foo" != "bar"`. Four operators (`|=`, `|~`, `!=`, `!~`) with quoted values, combined with AND semantics. Parsed by `parse_filter_query()`; invalid queries show errors in the status bar with input preserved for editing.
 - **Memory-bounded**: `max_lines` (default 10,000) drops oldest entries via `Vec::remove(0)`.
 
 ## Development Workflow

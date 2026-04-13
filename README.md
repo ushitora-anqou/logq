@@ -10,7 +10,7 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **Timestamps**: Each line shows its received time (`HH:MM:SS.mmm`)
 - **JSON syntax highlighting**: Color-coded keys, strings, numbers, booleans, and null values
 - **Pretty-printed detail view**: Press Enter to expand a line into a readable, indented JSON view
-- **Regex filtering**: Type `/pattern` to filter with regex; use `!pattern` to exclude matches
+- **Query-based filtering**: Type `/` to enter filter mode with a structured query language supporting literal contains, regex match, and their negations, combinable with AND semantics
 - **Breadcrumb bar**: Shows current context (detail view, active filter) at the top of the screen
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
@@ -61,18 +61,19 @@ logq -- command arg1 arg2 ...
 | Key           | Action                          |
 |---------------|---------------------------------|
 | `Enter`       | Apply filter                    |
-| `Esc`         | Delete last character           |
-| `Backspace`   | Delete last character           |
+| `Esc`         | Cancel filter input             |
+| `Backspace`   | Delete last character / cancel if empty |
 | `<char>`      | Append character to filter      |
 
-Filter patterns support Rust regex syntax. Prefix with `!` for negation.
+After pressing `/`, type a query using the following operators. Values must be enclosed in double quotes. Multiple conditions are combined with AND (space-separated).
 
-| Pattern         | Meaning                            |
-|-----------------|------------------------------------|
-| `error`         | Show lines containing "error"      |
-| `err.*timeout`  | Show lines matching the regex      |
-| `!error`        | Show lines NOT containing "error"  |
-| `!err.*timeout` | Exclude lines matching the regex   |
+| Query                | Meaning                                      |
+|----------------------|----------------------------------------------|
+| `|= "error"`         | Show lines containing "error"                |
+| `|~ "err.*timeout"`  | Show lines matching the regex                |
+| `!= "debug"`         | Show lines NOT containing "debug"            |
+| `!~ "err.*"`         | Exclude lines matching the regex             |
+| `|= "error" != "timeout"` | Show lines containing "error" AND not containing "timeout" |
 
 ### Detail view
 
@@ -101,11 +102,11 @@ logq -- my-script.sh
 # Limit to 5000 lines
 cat large-file.ndjson | logq --max-lines 5000
 
-# Filter with regex
-# (inside logq) type /err.*timeout to show only matching lines
+# Filter with query language
+# (inside logq) type /|~ "err.*timeout" to show only matching lines
 
-# Exclude lines with NOT filter
-# (inside logq) type /!debug to hide debug-level logs
+# Combine conditions
+# (inside logq) type /|= "error" != "timeout" to show errors excluding timeouts
 ```
 
 ## License

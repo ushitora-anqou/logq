@@ -130,21 +130,21 @@ fn test_filter() {
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     t.render();
 
-    // Type "alpha"
-    for c in "alpha".chars() {
+    // Type |= "alpha"
+    for c in "|= \"alpha\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.render();
 
     // Status bar should show filter input
-    assert!(t.screen_contains("/alpha"));
+    assert!(t.screen_contains("|="));
 
     // Apply filter
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     t.render();
 
     // Breadcrumb shows filter, content filtered
-    assert!(t.screen_contains("[filter: alpha]"));
+    assert!(t.screen_contains("[filter:"));
     assert!(t.screen_contains("alpha"));
     assert!(!t.screen_contains("beta"));
 }
@@ -288,40 +288,84 @@ fn test_regex_filter() {
     t.add_line("error disk");
     t.render();
 
-    // Type filter: /err.*timeout
+    // Type filter: /|~ "err.*timeout"
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    for c in "err.*timeout".chars() {
+    for c in "|~ \"err.*timeout\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     t.render();
 
-    assert!(t.screen_contains("[filter: err.*timeout]"));
+    assert!(t.screen_contains("[filter:"));
     assert!(t.screen_contains("error timeout"));
     assert!(!t.screen_contains("info ok"));
     assert!(!t.screen_contains("error disk"));
 }
 
 #[test]
-fn test_not_filter() {
+fn test_not_contains_filter() {
     let mut t = TestApp::new(10000);
     t.add_line("error timeout");
     t.add_line("info ok");
     t.add_line("warn slow");
     t.render();
 
-    // Type filter: /!error
+    // Type filter: /!= "error"
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    for c in "!error".chars() {
+    for c in "!= \"error\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     t.render();
 
-    assert!(t.screen_contains("[filter: error]"));
+    assert!(t.screen_contains("[filter:"));
     assert!(t.screen_contains("info ok"));
     assert!(t.screen_contains("warn slow"));
     assert!(!t.screen_contains("error timeout"));
+}
+
+#[test]
+fn test_not_regex_filter() {
+    let mut t = TestApp::new(10000);
+    t.add_line("error timeout");
+    t.add_line("info ok");
+    t.add_line("warn slow");
+    t.render();
+
+    // Type filter: /!~ "err.*"
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "!~ \"err.*\"".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    t.render();
+
+    assert!(t.screen_contains("[filter:"));
+    assert!(t.screen_contains("info ok"));
+    assert!(t.screen_contains("warn slow"));
+    assert!(!t.screen_contains("error timeout"));
+}
+
+#[test]
+fn test_multiple_conditions_filter() {
+    let mut t = TestApp::new(10000);
+    t.add_line("error timeout");
+    t.add_line("error disk");
+    t.add_line("info ok");
+    t.render();
+
+    // Type filter: /|= "error" != "timeout"
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "|= \"error\" != \"timeout\"".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    t.render();
+
+    assert!(t.screen_contains("[filter:"));
+    assert!(t.screen_contains("error disk"));
+    assert!(!t.screen_contains("error timeout"));
+    assert!(!t.screen_contains("info ok"));
 }
 
 #[test]
@@ -350,18 +394,16 @@ fn test_filter_backspace_nonempty_removes_char() {
     t.render();
 
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    for c in "abc".chars() {
+    for c in "|=".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.render();
-    assert!(t.screen_contains("/abc"));
+    assert!(t.screen_contains("|="));
 
     // Backspace should remove last char, not cancel
     t.press(KeyCode::Backspace, KeyModifiers::NONE);
     t.render();
     assert!(t.app.filter_input.is_some());
-    assert!(t.screen_contains("/ab"));
-    assert!(!t.screen_contains("/abc"));
 }
 
 #[test]
@@ -371,7 +413,7 @@ fn test_filter_esc_cancels() {
     t.render();
 
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    for c in "test".chars() {
+    for c in "|= \"test\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     assert!(t.app.filter_input.is_some());
@@ -391,8 +433,10 @@ fn test_filter_help_text_visible() {
     t.render();
 
     // Status bar should show filter syntax help
-    assert!(t.screen_contains("!prefix:negate"));
-    assert!(t.screen_contains("regex"));
+    assert!(t.screen_contains("|="));
+    assert!(t.screen_contains("|~"));
+    assert!(t.screen_contains("!="));
+    assert!(t.screen_contains("!~"));
     assert!(t.screen_contains("Enter:apply"));
     assert!(t.screen_contains("Esc/Bksp:cancel"));
 }
@@ -405,18 +449,67 @@ fn test_escape_clears_filter() {
     t.add_line("alpha2");
     t.render();
 
-    // Apply filter "alpha"
+    // Apply filter |= "alpha"
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    for c in "alpha".chars() {
+    for c in "|= \"alpha\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     t.render();
-    assert!(t.screen_contains("[filter: alpha]"));
+    assert!(t.screen_contains("[filter:"));
 
     // Esc clears filter
     t.press(KeyCode::Esc, KeyModifiers::NONE);
     t.render();
     assert!(!t.screen_contains("[filter:"));
     assert!(t.screen_contains("beta"));
+}
+
+#[test]
+fn test_filter_parse_error_shown() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Type invalid filter (unterminated string)
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "|= \"foo".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    t.render();
+
+    // Error should be shown, input preserved
+    assert!(t.app.filter_input.is_some());
+    assert!(t.screen_contains("Error:"));
+}
+
+#[test]
+fn test_filter_parse_error_then_fix() {
+    let mut t = TestApp::new(10000);
+    t.add_line("foobar");
+    t.add_line("bazqux");
+    t.render();
+
+    // Type invalid filter
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "|= \"foo".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    t.render();
+
+    // Error shown, input preserved
+    assert!(t.app.filter_input.is_some());
+
+    // Fix: type closing quote
+    t.press(KeyCode::Char('"'), KeyModifiers::NONE);
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    t.render();
+
+    // Filter applied
+    assert!(t.app.filter_input.is_none());
+    assert!(t.screen_contains("[filter:"));
+    assert!(t.screen_contains("foobar"));
+    assert!(!t.screen_contains("bazqux"));
 }

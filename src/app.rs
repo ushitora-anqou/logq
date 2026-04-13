@@ -25,12 +25,129 @@ pub struct LogEntry {
     pub timestamp: String, // "HH:MM:SS.mmm"
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterOp {
+    Contains,
+    RegexMatch,
+    NotContains,
+    NotRegexMatch,
+}
+
+#[derive(Debug, Clone)]
+pub struct FilterCondition {
+    pub operator: FilterOp,
+    pub value: String,
+    pub regex: Option<regex::Regex>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FilterQuery {
+    pub conditions: Vec<FilterCondition>,
+}
+
+impl FilterQuery {
+    fn display_string(&self) -> String {
+        self.conditions
+            .iter()
+            .map(|c| {
+                let op = match c.operator {
+                    FilterOp::Contains => "|=",
+                    FilterOp::RegexMatch => "|~",
+                    FilterOp::NotContains => "!=",
+                    FilterOp::NotRegexMatch => "!~",
+                };
+                format!(r#"{} "{}""#, op, c.value)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Ok(FilterQuery { conditions: vec![] });
+    }
+
+    let mut conditions = Vec::new();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut pos = 0;
+
+    while pos < len {
+        // Skip whitespace
+        while pos < len && chars[pos] == ' ' {
+            pos += 1;
+        }
+        if pos >= len {
+            break;
+        }
+
+        // Read operator (2 chars)
+        if pos + 1 >= len {
+            return Err(format!("Expected operator at position {}", pos));
+        }
+        let op: FilterOp = match (chars[pos], chars[pos + 1]) {
+            ('|', '=') => FilterOp::Contains,
+            ('|', '~') => FilterOp::RegexMatch,
+            ('!', '=') => FilterOp::NotContains,
+            ('!', '~') => FilterOp::NotRegexMatch,
+            _ => return Err(format!("Expected operator |= |~ != !~ at position {}", pos)),
+        };
+        pos += 2;
+
+        // Skip whitespace
+        while pos < len && chars[pos] == ' ' {
+            pos += 1;
+        }
+
+        // Expect opening quote
+        if pos >= len || chars[pos] != '"' {
+            return Err(format!("Expected '\"' at position {}", pos));
+        }
+        pos += 1;
+
+        // Read value until closing quote
+        let mut value = String::new();
+        loop {
+            if pos >= len {
+                return Err("Unterminated string".to_string());
+            }
+            match chars[pos] {
+                '"' => {
+                    pos += 1;
+                    break;
+                }
+                _ => {
+                    value.push(chars[pos]);
+                    pos += 1;
+                }
+            }
+        }
+
+        // Compile regex if needed
+        let regex = match op {
+            FilterOp::RegexMatch | FilterOp::NotRegexMatch => {
+                Some(regex::Regex::new(&value).map_err(|e| format!("Invalid regex: {}", e))?)
+            }
+            _ => None,
+        };
+
+        conditions.push(FilterCondition {
+            operator: op,
+            value,
+            regex,
+        });
+    }
+
+    Ok(FilterQuery { conditions })
+}
+
 pub struct App {
     pub lines: Vec<LogEntry>,
     pub view_mode: ViewMode,
     pub selected: usize,
     pub scroll_offset: usize,
-    pub filter: Option<String>,
     pub auto_scroll: bool,
     pub last_ctrl_c: Option<Instant>,
     pub detail_scroll: u16,
@@ -38,8 +155,8 @@ pub struct App {
     pub max_lines: usize,
     pub should_quit: bool,
     colors: HighlightColors,
-    filter_regex: Option<regex::Regex>,
-    filter_negated: bool,
+    filter_query: Option<FilterQuery>,
+    filter_error: Option<String>,
 }
 
 impl App {
@@ -49,7 +166,6 @@ impl App {
             view_mode: ViewMode::List,
             selected: 0,
             scroll_offset: 0,
-            filter: None,
             auto_scroll: true,
             last_ctrl_c: None,
             detail_scroll: 0,
@@ -57,8 +173,8 @@ impl App {
             max_lines,
             should_quit: false,
             colors: HighlightColors::default(),
-            filter_regex: None,
-            filter_negated: false,
+            filter_query: None,
+            filter_error: None,
         }
     }
 
@@ -91,31 +207,20 @@ impl App {
     }
 
     fn line_matches_filter(&self, text: &str) -> bool {
-        match (&self.filter, &self.filter_regex) {
-            (Some(_pattern), Some(re)) => {
-                let matched = re.is_match(text);
-                if self.filter_negated {
-                    !matched
-                } else {
-                    matched
-                }
-            }
-            (Some(pattern), None) => {
-                // Regex compilation failed, fallback to literal
-                let matched = text.contains(pattern);
-                if self.filter_negated {
-                    !matched
-                } else {
-                    matched
-                }
-            }
-            _ => true,
+        match &self.filter_query {
+            Some(query) => query.conditions.iter().all(|c| match c.operator {
+                FilterOp::Contains => text.contains(&c.value),
+                FilterOp::NotContains => !text.contains(&c.value),
+                FilterOp::RegexMatch => c.regex.as_ref().unwrap().is_match(text),
+                FilterOp::NotRegexMatch => !c.regex.as_ref().unwrap().is_match(text),
+            }),
+            None => true,
         }
     }
 
     fn filtered_indices(&self) -> Vec<usize> {
-        match &self.filter {
-            Some(f) if !f.is_empty() => self
+        match &self.filter_query {
+            Some(q) if !q.conditions.is_empty() => self
                 .lines
                 .iter()
                 .enumerate()
@@ -184,18 +289,21 @@ impl App {
         match code {
             KeyCode::Enter => {
                 if let Some(input) = self.filter_input.take() {
-                    let (negated, raw) = if let Some(p) = input.strip_prefix('!') {
-                        (true, p.to_string())
-                    } else {
-                        (false, input)
-                    };
-                    self.filter = if raw.is_empty() {
-                        None
-                    } else {
-                        self.filter_negated = negated;
-                        self.filter_regex = regex::Regex::new(&raw).ok();
-                        Some(raw)
-                    };
+                    match parse_filter_query(&input) {
+                        Ok(query) if !query.conditions.is_empty() => {
+                            self.filter_query = Some(query);
+                            self.filter_error = None;
+                        }
+                        Ok(_) => {
+                            // Empty query, clear filter
+                            self.filter_query = None;
+                            self.filter_error = None;
+                        }
+                        Err(msg) => {
+                            self.filter_error = Some(msg);
+                            self.filter_input = Some(input);
+                        }
+                    }
                 }
                 let filtered = self.filtered_indices();
                 if !filtered.is_empty() {
@@ -208,19 +316,23 @@ impl App {
             }
             KeyCode::Esc => {
                 self.filter_input = None;
+                self.filter_error = None;
             }
             KeyCode::Backspace => {
                 if let Some(input) = &mut self.filter_input {
                     if input.is_empty() {
                         self.filter_input = None;
+                        self.filter_error = None;
                     } else {
                         input.pop();
+                        self.filter_error = None;
                     }
                 }
             }
             KeyCode::Char(c) => {
                 if let Some(input) = &mut self.filter_input {
                     input.push(c);
+                    self.filter_error = None;
                 }
             }
             _ => {}
@@ -274,9 +386,7 @@ impl App {
                 self.filter_input = Some(String::new());
             }
             (KeyCode::Esc, _) => {
-                self.filter = None;
-                self.filter_regex = None;
-                self.filter_negated = false;
+                self.filter_query = None;
             }
             _ => {}
         }
@@ -352,8 +462,8 @@ impl App {
 
     fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
         let mut parts = Vec::new();
-        if let Some(f) = &self.filter {
-            parts.push(format!("[filter: {}]", f));
+        if let Some(q) = &self.filter_query {
+            parts.push(format!("[filter: {}]", q.display_string()));
         }
         if self.view_mode == ViewMode::Detail {
             parts.push("[detail]".to_string());
@@ -450,29 +560,49 @@ impl App {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let status_text = match self.view_mode {
+        let spans: Vec<Span<'_>> = match self.view_mode {
             ViewMode::List => {
-                if self.filter_input.is_some() {
+                if self.filter_input.is_some() || self.filter_error.is_some() {
                     let input = self.filter_input.as_deref().unwrap_or("");
-                    format!(" /{}  Enter:apply  Esc/Bksp:cancel  (!prefix:negate  regex:/.*/)", input)
+                    let mut s = vec![Span::styled(
+                        format!(" /{}", input),
+                        Style::default().fg(Color::White).bg(Color::DarkGray),
+                    )];
+                    if let Some(err) = &self.filter_error {
+                        s.push(Span::styled(
+                            format!("  Error: {}", err),
+                            Style::default().fg(Color::Red).bg(Color::DarkGray),
+                        ));
+                    } else {
+                        s.push(Span::styled(
+                            "  Enter:apply  Esc/Bksp:cancel  (|= |~ != !~ \"value\")",
+                            Style::default().fg(Color::White).bg(Color::DarkGray),
+                        ));
+                    }
+                    s
                 } else {
-                    let filter_info = match &self.filter {
-                        Some(f) => format!(" [filter:{}] ", f),
+                    let filter_info = match &self.filter_query {
+                        Some(q) => format!(" [filter:{}] ", q.display_string()),
                         None => String::new(),
                     };
-                    format!(
-                        "{}j/k:nav  Enter:detail  /:filter  G:latest  C-d/u/f/b/e/y:scroll  C-c×2:quit",
-                        filter_info
-                    )
+                    vec![Span::styled(
+                        format!(
+                            "{}j/k:nav  Enter:detail  /:filter  G:latest  C-d/u/f/b/e/y:scroll  C-c×2:quit",
+                            filter_info
+                        ),
+                        Style::default().fg(Color::White).bg(Color::DarkGray),
+                    )]
                 }
             }
-            ViewMode::Detail => "Backspace:back  j/k,C-d/u/f/b/e/y:scroll  C-c×2:quit".to_string(),
+            ViewMode::Detail => {
+                vec![Span::styled(
+                    "Backspace:back  j/k,C-d/u/f/b/e/y:scroll  C-c×2:quit",
+                    Style::default().fg(Color::White).bg(Color::DarkGray),
+                )]
+            }
         };
 
-        let status = Paragraph::new(Line::from(vec![Span::styled(
-            status_text,
-            Style::default().fg(Color::White).bg(Color::DarkGray),
-        )]));
+        let status = Paragraph::new(Line::from(spans));
         frame.render_widget(status, area);
     }
 
@@ -621,8 +751,13 @@ mod tests {
         app.add_line("{\"name\":\"alice\"}".to_string());
         app.add_line("plain text line".to_string());
         app.add_line("{\"name\":\"bob\"}".to_string());
-        app.filter = Some("alice".to_string());
-        app.filter_regex = regex::Regex::new("alice").ok();
+        app.filter_query = Some(FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::Contains,
+                value: "alice".to_string(),
+                regex: None,
+            }],
+        });
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0]);
     }
@@ -632,8 +767,13 @@ mod tests {
         let mut app = App::new(100);
         app.add_line("hello".to_string());
         app.add_line("world".to_string());
-        app.filter = Some("xyz".to_string());
-        app.filter_regex = regex::Regex::new("xyz").ok();
+        app.filter_query = Some(FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::Contains,
+                value: "xyz".to_string(),
+                regex: None,
+            }],
+        });
         let filtered = app.filtered_indices();
         assert!(filtered.is_empty());
     }
@@ -642,11 +782,15 @@ mod tests {
     fn test_filter_clear() {
         let mut app = App::new(100);
         app.add_line("hello".to_string());
-        app.filter = Some("xyz".to_string());
-        app.filter_regex = regex::Regex::new("xyz").ok();
+        app.filter_query = Some(FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::Contains,
+                value: "xyz".to_string(),
+                regex: None,
+            }],
+        });
         assert_eq!(app.filtered_indices().len(), 0);
-        app.filter = None;
-        app.filter_regex = None;
+        app.filter_query = None;
         assert_eq!(app.filtered_indices().len(), 1);
     }
 
@@ -656,49 +800,15 @@ mod tests {
         app.add_line("error: connection timeout".to_string());
         app.add_line("info: request ok".to_string());
         app.add_line("error: disk full".to_string());
-        app.filter = Some("err.*timeout".to_string());
-        app.filter_regex = regex::Regex::new("err.*timeout").ok();
+        app.filter_query = Some(FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::RegexMatch,
+                value: "err.*timeout".to_string(),
+                regex: regex::Regex::new("err.*timeout").ok(),
+            }],
+        });
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0]);
-    }
-
-    #[test]
-    fn test_regex_filter_invalid_falls_back_to_literal() {
-        let mut app = App::new(100);
-        app.add_line("test [abc]".to_string());
-        app.add_line("test xyz".to_string());
-        // Invalid regex: unmatched bracket
-        app.filter = Some("[abc".to_string());
-        app.filter_regex = None; // compilation failed
-        let filtered = app.filtered_indices();
-        // Falls back to literal contains
-        assert_eq!(filtered, vec![0]);
-    }
-
-    #[test]
-    fn test_not_filter() {
-        let mut app = App::new(100);
-        app.add_line("error: timeout".to_string());
-        app.add_line("info: ok".to_string());
-        app.add_line("warn: slow".to_string());
-        app.filter = Some("error".to_string());
-        app.filter_regex = regex::Regex::new("error").ok();
-        app.filter_negated = true;
-        let filtered = app.filtered_indices();
-        assert_eq!(filtered, vec![1, 2]);
-    }
-
-    #[test]
-    fn test_not_filter_with_regex() {
-        let mut app = App::new(100);
-        app.add_line("error: timeout".to_string());
-        app.add_line("error: disk full".to_string());
-        app.add_line("info: ok".to_string());
-        app.filter = Some("err.*timeout".to_string());
-        app.filter_regex = regex::Regex::new("err.*timeout").ok();
-        app.filter_negated = true;
-        let filtered = app.filtered_indices();
-        assert_eq!(filtered, vec![1, 2]);
     }
 
     #[test]
@@ -728,8 +838,13 @@ mod tests {
         app.add_line("aaa".to_string());
         app.add_line("bbb".to_string());
         app.add_line("aaa2".to_string());
-        app.filter = Some("aaa".to_string());
-        app.filter_regex = regex::Regex::new("aaa").ok();
+        app.filter_query = Some(FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::Contains,
+                value: "aaa".to_string(),
+                regex: None,
+            }],
+        });
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0, 2]);
 
@@ -858,8 +973,13 @@ mod tests {
         app.add_line("aaa2".to_string());
         app.add_line("bbb2".to_string());
         app.add_line("aaa3".to_string());
-        app.filter = Some("aaa".to_string());
-        app.filter_regex = regex::Regex::new("aaa").ok();
+        app.filter_query = Some(FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::Contains,
+                value: "aaa".to_string(),
+                regex: None,
+            }],
+        });
         app.update_auto_scroll(10);
         assert_eq!(app.selected, 4);
     }
@@ -877,5 +997,200 @@ mod tests {
             "add_line 1000x took {:?}",
             elapsed
         );
+    }
+
+    // Parser tests
+
+    #[test]
+    fn test_parse_contains() {
+        let query = parse_filter_query(r#"|= "foo""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::Contains);
+        assert_eq!(query.conditions[0].value, "foo");
+    }
+
+    #[test]
+    fn test_parse_regex_match() {
+        let query = parse_filter_query(r#"|~ "err.*""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::RegexMatch);
+        assert_eq!(query.conditions[0].value, "err.*");
+        assert!(query.conditions[0].regex.is_some());
+    }
+
+    #[test]
+    fn test_parse_not_contains() {
+        let query = parse_filter_query(r#"!= "bar""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::NotContains);
+        assert_eq!(query.conditions[0].value, "bar");
+    }
+
+    #[test]
+    fn test_parse_not_regex_match() {
+        let query = parse_filter_query(r#"!~ "baz""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::NotRegexMatch);
+        assert_eq!(query.conditions[0].value, "baz");
+        assert!(query.conditions[0].regex.is_some());
+    }
+
+    #[test]
+    fn test_parse_multiple_conditions() {
+        let query = parse_filter_query(r#"|= "foo" != "bar""#).unwrap();
+        assert_eq!(query.conditions.len(), 2);
+        assert_eq!(query.conditions[0].operator, FilterOp::Contains);
+        assert_eq!(query.conditions[0].value, "foo");
+        assert_eq!(query.conditions[1].operator, FilterOp::NotContains);
+        assert_eq!(query.conditions[1].value, "bar");
+    }
+
+    #[test]
+    fn test_parse_empty_input() {
+        let query = parse_filter_query("").unwrap();
+        assert!(query.conditions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_whitespace_only() {
+        let query = parse_filter_query("   ").unwrap();
+        assert!(query.conditions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_error_no_operator() {
+        assert!(parse_filter_query(r#""foo""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_invalid_operator() {
+        assert!(parse_filter_query(r#"== "foo""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_unterminated_string() {
+        assert!(parse_filter_query(r#"|= "foo"#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_missing_quotes() {
+        assert!(parse_filter_query("|= foo").is_err());
+    }
+
+    #[test]
+    fn test_parse_error_invalid_regex() {
+        assert!(parse_filter_query(r#"|~ "[invalid""#).is_err());
+    }
+
+    #[test]
+    fn test_query_matches_contains() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::Contains,
+                value: "foo".to_string(),
+                regex: None,
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter("foobar"));
+        assert!(!app.line_matches_filter("barbaz"));
+    }
+
+    #[test]
+    fn test_query_matches_not_contains() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::NotContains,
+                value: "foo".to_string(),
+                regex: None,
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter("barbaz"));
+        assert!(!app.line_matches_filter("foobar"));
+    }
+
+    #[test]
+    fn test_query_matches_regex() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::RegexMatch,
+                value: "err.*".to_string(),
+                regex: regex::Regex::new("err.*").ok(),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter("error: timeout"));
+        assert!(!app.line_matches_filter("info: ok"));
+    }
+
+    #[test]
+    fn test_query_matches_not_regex() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::NotRegexMatch,
+                value: "err.*".to_string(),
+                regex: regex::Regex::new("err.*").ok(),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter("info: ok"));
+        assert!(!app.line_matches_filter("error: timeout"));
+    }
+
+    #[test]
+    fn test_query_matches_and_semantics() {
+        let query = FilterQuery {
+            conditions: vec![
+                FilterCondition {
+                    operator: FilterOp::Contains,
+                    value: "error".to_string(),
+                    regex: None,
+                },
+                FilterCondition {
+                    operator: FilterOp::NotContains,
+                    value: "timeout".to_string(),
+                    regex: None,
+                },
+            ],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter("error: disk full"));
+        assert!(!app.line_matches_filter("error: timeout"));
+        assert!(!app.line_matches_filter("info: ok"));
+    }
+
+    #[test]
+    fn test_filter_query_display_string() {
+        let query = FilterQuery {
+            conditions: vec![
+                FilterCondition {
+                    operator: FilterOp::Contains,
+                    value: "foo".to_string(),
+                    regex: None,
+                },
+                FilterCondition {
+                    operator: FilterOp::NotContains,
+                    value: "bar".to_string(),
+                    regex: None,
+                },
+            ],
+        };
+        assert_eq!(query.display_string(), r#"|= "foo" != "bar""#);
     }
 }
