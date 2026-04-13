@@ -765,7 +765,6 @@ dependencies = [
  "libc",
  "ratatui",
  "regex",
- "serde",
  "serde_json",
  "tokio",
 ]

@@ -13,8 +13,7 @@ use crate::highlight::{HighlightColors, highlight_line};
 const DOUBLE_CTRL_C_INTERVAL_MS: u64 = 500;
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ViewMode {
     List,
     Detail,
@@ -24,22 +23,6 @@ pub enum ViewMode {
 pub struct LogEntry {
     pub text: String,
     pub timestamp: String, // "HH:MM:SS.mmm"
-}
-
-#[derive(serde::Serialize)]
-pub struct AppState {
-    pub lines: Vec<String>,
-    pub timestamps: Vec<String>,
-    pub view_mode: ViewMode,
-    pub selected: usize,
-    pub scroll_offset: usize,
-    pub filter: Option<String>,
-    pub auto_scroll: bool,
-    pub detail_scroll: u16,
-    pub filter_input: Option<String>,
-    pub should_quit: bool,
-    pub total_lines: usize,
-    pub filtered_count: usize,
 }
 
 pub struct App {
@@ -105,23 +88,6 @@ impl App {
         self.selected = filtered[filtered.len() - 1];
         let max_offset = filtered.len().saturating_sub(visible_height);
         self.scroll_offset = max_offset;
-    }
-
-    pub fn snapshot(&self) -> AppState {
-        AppState {
-            lines: self.lines.iter().map(|e| e.text.clone()).collect(),
-            timestamps: self.lines.iter().map(|e| e.timestamp.clone()).collect(),
-            view_mode: self.view_mode.clone(),
-            selected: self.selected,
-            scroll_offset: self.scroll_offset,
-            filter: self.filter.clone(),
-            auto_scroll: self.auto_scroll,
-            detail_scroll: self.detail_scroll,
-            filter_input: self.filter_input.clone(),
-            should_quit: self.should_quit,
-            total_lines: self.lines.len(),
-            filtered_count: self.filtered_indices().len(),
-        }
     }
 
     fn line_matches_filter(&self, text: &str) -> bool {
