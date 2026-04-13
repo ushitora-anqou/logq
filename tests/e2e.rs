@@ -190,3 +190,25 @@ fn test_tui_mode_with_command_no_panic() {
         }
     }
 }
+
+#[test]
+fn test_quit_with_no_input() {
+    let states = run_logq("CMD:C-c\nCMD:C-c\n");
+    assert_eq!(states.len(), 2);
+    assert!(!states[0].should_quit);
+    assert!(states[1].should_quit);
+}
+
+#[test]
+fn test_auto_scroll_follows_rapid_input() {
+    let mut input = String::new();
+    for i in 0..100 {
+        input.push_str(&format!("line{}\n", i));
+    }
+    let states = run_logq(&input);
+    assert_eq!(states.len(), 100);
+    let last = &states[99];
+    assert!(last.auto_scroll);
+    assert_eq!(last.selected, 99);
+    assert_eq!(last.total_lines, 100);
+}

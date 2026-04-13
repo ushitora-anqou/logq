@@ -74,7 +74,13 @@ fn main() -> io::Result<()> {
     let saved_stdin = redirect_stdin_to_tty()?;
 
     let mut terminal = ratatui::init();
-    let (rx, _child) = input::spawn_line_reader(command, saved_stdin);
+    let (rx, _child) = if command.is_none() && saved_stdin.is_none() {
+        // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
+        let (_, rx) = tokio::sync::mpsc::unbounded_channel();
+        (rx, None)
+    } else {
+        input::spawn_line_reader(command, saved_stdin)
+    };
 
     let mut app = App::new(cli.max_lines);
     let result = run_app(&mut terminal, &mut app, rx);
@@ -152,6 +158,8 @@ fn run_json_mode(max_lines: usize) -> io::Result<()> {
         } else {
             app.add_line(line);
         }
+
+        app.update_auto_scroll(area.height as usize);
 
         let state = app.snapshot();
         let json = serde_json::to_string(&state).unwrap();

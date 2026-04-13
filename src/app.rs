@@ -74,12 +74,20 @@ impl App {
                 self.selected -= 1;
             }
         }
-        if self.auto_scroll {
-            let filtered = self.filtered_indices();
-            if !filtered.is_empty() {
-                self.selected = filtered.len() - 1;
-            }
+        // auto_scroll: selected/scroll_offset are updated in update_auto_scroll()
+    }
+
+    pub fn update_auto_scroll(&mut self, visible_height: usize) {
+        if !self.auto_scroll {
+            return;
         }
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        self.selected = filtered[filtered.len() - 1];
+        let max_offset = filtered.len().saturating_sub(visible_height);
+        self.scroll_offset = max_offset;
     }
 
     pub fn snapshot(&self) -> AppState {
@@ -313,6 +321,9 @@ impl App {
         let width = area.width as usize;
         let visible_height = area.height as usize;
 
+        // auto_scroll: follow the latest line
+        self.update_auto_scroll(visible_height);
+
         // Clamp scroll_offset
         let max_offset = filtered.len().saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_offset);
@@ -505,11 +516,10 @@ mod tests {
         let mut app = App::new(2);
         app.add_line("a".to_string());
         app.add_line("b".to_string());
-        // auto_scroll is true, so add_line sets selected to last filtered index
-        assert_eq!(app.selected, 1); // Points at "b"
+        app.selected = 1; // Explicitly set to last line
         app.add_line("c".to_string()); // "a" is evicted
         assert_eq!(app.lines, vec!["b", "c"]);
-        assert_eq!(app.selected, 1); // Points at "c" (was adjusted + auto_scroll)
+        assert_eq!(app.selected, 0); // Adjusted from 1 to 0
     }
 
     #[test]
@@ -669,5 +679,60 @@ mod tests {
     fn test_truncate_str() {
         assert_eq!(truncate_str("hello", 10), "hello");
         assert_eq!(truncate_str("hello world", 8), "hello wo…");
+    }
+
+    #[test]
+    fn test_auto_scroll_updates_scroll_offset() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        assert!(app.auto_scroll);
+        app.update_auto_scroll(10);
+        assert_eq!(app.selected, 49);
+        assert_eq!(app.scroll_offset, 40);
+    }
+
+    #[test]
+    fn test_auto_scroll_disabled_no_offset_update() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.auto_scroll = false;
+        app.scroll_offset = 5;
+        app.update_auto_scroll(10);
+        // scroll_offset should not change when auto_scroll is off
+        assert_eq!(app.scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_auto_scroll_with_filter() {
+        let mut app = App::new(100);
+        app.add_line("aaa1".to_string());
+        app.add_line("bbb".to_string());
+        app.add_line("aaa2".to_string());
+        app.add_line("bbb2".to_string());
+        app.add_line("aaa3".to_string());
+        app.filter = Some("aaa".to_string());
+        app.update_auto_scroll(10);
+        // selected should be at index 4 (aaa3), the last matching line
+        assert_eq!(app.selected, 4);
+    }
+
+    #[test]
+    fn test_add_line_performance_many_lines() {
+        let mut app = App::new(10000);
+        let start = std::time::Instant::now();
+        for i in 0..1000 {
+            app.add_line(format!("line number {} with some content", i));
+        }
+        let elapsed = start.elapsed();
+        // Should complete well within 100ms without O(n) filtered_indices per call
+        assert!(
+            elapsed.as_millis() < 100,
+            "add_line 1000x took {:?}",
+            elapsed
+        );
     }
 }
