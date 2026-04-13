@@ -157,6 +157,13 @@ pub struct App {
     colors: HighlightColors,
     filter_query: Option<FilterQuery>,
     filter_error: Option<String>,
+    live_filter_query: Option<FilterQuery>,
+    live_filter_error: Option<String>,
+    filter_history: Vec<String>,
+    filter_history_index: Option<usize>,
+    filter_draft: Option<String>,
+    history_search_active: bool,
+    history_search_start: Option<usize>,
 }
 
 impl App {
@@ -175,6 +182,13 @@ impl App {
             colors: HighlightColors::default(),
             filter_query: None,
             filter_error: None,
+            live_filter_query: None,
+            live_filter_error: None,
+            filter_history: Vec::new(),
+            filter_history_index: None,
+            filter_draft: None,
+            history_search_active: false,
+            history_search_start: None,
         }
     }
 
@@ -206,8 +220,16 @@ impl App {
         self.scroll_offset = max_offset;
     }
 
+    fn active_filter_query(&self) -> Option<&FilterQuery> {
+        if self.filter_input.is_some() {
+            self.live_filter_query.as_ref()
+        } else {
+            self.filter_query.as_ref()
+        }
+    }
+
     fn line_matches_filter(&self, text: &str) -> bool {
-        match &self.filter_query {
+        match self.active_filter_query() {
             Some(query) => query.conditions.iter().all(|c| match c.operator {
                 FilterOp::Contains => text.contains(&c.value),
                 FilterOp::NotContains => !text.contains(&c.value),
@@ -219,7 +241,7 @@ impl App {
     }
 
     fn filtered_indices(&self) -> Vec<usize> {
-        match &self.filter_query {
+        match self.active_filter_query() {
             Some(q) if !q.conditions.is_empty() => self
                 .lines
                 .iter()
@@ -285,7 +307,26 @@ impl App {
         }
     }
 
-    fn handle_filter_input(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
+    fn update_live_filter(&mut self) {
+        if let Some(input) = &self.filter_input {
+            match parse_filter_query(input) {
+                Ok(query) if !query.conditions.is_empty() => {
+                    self.live_filter_query = Some(query);
+                    self.live_filter_error = None;
+                }
+                Ok(_) => {
+                    self.live_filter_query = None;
+                    self.live_filter_error = None;
+                }
+                Err(msg) => {
+                    self.live_filter_query = None;
+                    self.live_filter_error = Some(msg);
+                }
+            }
+        }
+    }
+
+    fn handle_filter_input(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match code {
             KeyCode::Enter => {
                 if let Some(input) = self.filter_input.take() {
@@ -293,18 +334,32 @@ impl App {
                         Ok(query) if !query.conditions.is_empty() => {
                             self.filter_query = Some(query);
                             self.filter_error = None;
+                            self.live_filter_query = None;
+                            self.live_filter_error = None;
+                            if self.filter_history.last() != Some(&input) {
+                                self.filter_history.push(input);
+                                if self.filter_history.len() > 100 {
+                                    self.filter_history.remove(0);
+                                }
+                            }
                         }
                         Ok(_) => {
-                            // Empty query, clear filter
                             self.filter_query = None;
                             self.filter_error = None;
+                            self.live_filter_query = None;
+                            self.live_filter_error = None;
                         }
                         Err(msg) => {
-                            self.filter_error = Some(msg);
+                            self.filter_error = Some(msg.clone());
+                            self.live_filter_error = Some(msg);
                             self.filter_input = Some(input);
                         }
                     }
                 }
+                self.filter_draft = None;
+                self.filter_history_index = None;
+                self.history_search_active = false;
+                self.history_search_start = None;
                 let filtered = self.filtered_indices();
                 if !filtered.is_empty() {
                     if self.selected > filtered[filtered.len() - 1] {
@@ -317,25 +372,139 @@ impl App {
             KeyCode::Esc => {
                 self.filter_input = None;
                 self.filter_error = None;
+                self.live_filter_query = None;
+                self.live_filter_error = None;
+                self.filter_draft = None;
+                self.filter_history_index = None;
+                self.history_search_active = false;
+                self.history_search_start = None;
             }
             KeyCode::Backspace => {
                 if let Some(input) = &mut self.filter_input {
                     if input.is_empty() {
                         self.filter_input = None;
                         self.filter_error = None;
+                        self.live_filter_query = None;
+                        self.live_filter_error = None;
+                        self.filter_draft = None;
+                        self.filter_history_index = None;
+                        self.history_search_active = false;
+                        self.history_search_start = None;
                     } else {
                         input.pop();
                         self.filter_error = None;
+                        self.history_search_active = false;
+                        self.history_search_start = None;
+                        self.update_live_filter();
                     }
                 }
+            }
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.filter_input = None;
+                self.filter_error = None;
+                self.live_filter_query = None;
+                self.live_filter_error = None;
+                self.filter_draft = None;
+                self.filter_history_index = None;
+                self.history_search_active = false;
+                self.history_search_start = None;
+            }
+            KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.handle_history_search();
+            }
+            KeyCode::Up => {
+                self.history_search_active = false;
+                self.history_search_start = None;
+                self.handle_history_up();
+            }
+            KeyCode::Down => {
+                self.history_search_active = false;
+                self.history_search_start = None;
+                self.handle_history_down();
             }
             KeyCode::Char(c) => {
                 if let Some(input) = &mut self.filter_input {
                     input.push(c);
                     self.filter_error = None;
+                    self.history_search_active = false;
+                    self.history_search_start = None;
+                    self.update_live_filter();
                 }
             }
             _ => {}
+        }
+    }
+
+    fn handle_history_up(&mut self) {
+        if self.filter_history.is_empty() {
+            return;
+        }
+        if self.filter_history_index.is_none() {
+            // Save current input as draft
+            self.filter_draft = self.filter_input.clone();
+        }
+        let current = self
+            .filter_history_index
+            .unwrap_or(self.filter_history.len());
+        if current > 0 {
+            self.filter_history_index = Some(current - 1);
+            self.filter_input = Some(self.filter_history[current - 1].clone());
+            self.update_live_filter();
+        }
+    }
+
+    fn handle_history_down(&mut self) {
+        if self.filter_history.is_empty() {
+            return;
+        }
+        let current = self
+            .filter_history_index
+            .unwrap_or(self.filter_history.len());
+        if current < self.filter_history.len() - 1 {
+            self.filter_history_index = Some(current + 1);
+            self.filter_input = Some(self.filter_history[current + 1].clone());
+            self.update_live_filter();
+        } else {
+            // Past the end: restore draft
+            self.filter_history_index = None;
+            self.filter_input = self.filter_draft.clone().or_else(|| Some(String::new()));
+            self.update_live_filter();
+        }
+    }
+
+    fn handle_history_search(&mut self) {
+        if self.filter_history.is_empty() {
+            return;
+        }
+        let search_term = self
+            .filter_draft
+            .as_deref()
+            .or(self.filter_input.as_deref())
+            .unwrap_or("");
+        let start = self
+            .history_search_start
+            .unwrap_or(self.filter_history.len());
+        // Search backwards from start
+        for i in (0..start).rev() {
+            if self.filter_history[i].contains(search_term) {
+                self.filter_input = Some(self.filter_history[i].clone());
+                self.history_search_start = Some(i);
+                self.history_search_active = true;
+                self.update_live_filter();
+                return;
+            }
+        }
+        // Wrapped around: try from the end
+        if start < self.filter_history.len() {
+            for i in (start..self.filter_history.len()).rev() {
+                if self.filter_history[i].contains(search_term) {
+                    self.filter_input = Some(self.filter_history[i].clone());
+                    self.history_search_start = Some(i);
+                    self.history_search_active = true;
+                    self.update_live_filter();
+                    return;
+                }
+            }
         }
     }
 
@@ -383,7 +552,17 @@ impl App {
                 self.detail_scroll = 0;
             }
             (KeyCode::Char('/'), _) => {
-                self.filter_input = Some(String::new());
+                let preset = self.filter_history.last().cloned().unwrap_or_default();
+                self.filter_input = Some(preset);
+                self.filter_history_index = if self.filter_history.is_empty() {
+                    None
+                } else {
+                    Some(self.filter_history.len() - 1)
+                };
+                self.filter_draft = None;
+                self.history_search_active = false;
+                self.history_search_start = None;
+                self.update_live_filter();
             }
             (KeyCode::Esc, _) => {
                 self.filter_query = None;
@@ -397,7 +576,7 @@ impl App {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.handle_ctrl_c();
             }
-            (KeyCode::Backspace, _) | (KeyCode::Esc, _) => {
+            (KeyCode::Backspace, _) | (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
                 self.view_mode = ViewMode::List;
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
@@ -458,6 +637,15 @@ impl App {
             ViewMode::Detail => self.render_detail(frame, chunks[1]),
         }
         self.render_status(frame, chunks[2]);
+
+        // Show cursor during filter input
+        if self.filter_input.is_some() {
+            let input = self.filter_input.as_deref().unwrap_or("");
+            let prefix_len = 2; // " /"
+            let cursor_x = (prefix_len + input.len()) as u16;
+            let cursor_y = chunks[2].y;
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
     }
 
     fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
@@ -560,45 +748,78 @@ impl App {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
+        let bg = Style::default().bg(Color::DarkGray);
+        let width = area.width as usize;
+
         let spans: Vec<Span<'_>> = match self.view_mode {
             ViewMode::List => {
-                if self.filter_input.is_some() || self.filter_error.is_some() {
+                if self.filter_input.is_some() {
                     let input = self.filter_input.as_deref().unwrap_or("");
                     let mut s = vec![Span::styled(
                         format!(" /{}", input),
                         Style::default().fg(Color::White).bg(Color::DarkGray),
                     )];
-                    if let Some(err) = &self.filter_error {
+
+                    let error = self
+                        .live_filter_error
+                        .as_deref()
+                        .or(self.filter_error.as_deref());
+                    if let Some(err) = error {
                         s.push(Span::styled(
                             format!("  Error: {}", err),
                             Style::default().fg(Color::Red).bg(Color::DarkGray),
                         ));
-                    } else {
+                    }
+
+                    let left_len: usize = s.iter().map(|sp| sp.content.len()).sum();
+                    if self.history_search_active {
+                        let help = "C-r:next  Enter:apply  Esc/C-c:cancel";
+                        let padding = width.saturating_sub(left_len + help.len());
+                        s.push(Span::styled(" ".repeat(padding), bg));
                         s.push(Span::styled(
-                            "  Enter:apply  Esc/Bksp:cancel  (|= |~ != !~ \"value\")",
-                            Style::default().fg(Color::White).bg(Color::DarkGray),
+                            help.to_string(),
+                            Style::default().fg(Color::Yellow).bg(Color::DarkGray),
+                        ));
+                    } else {
+                        let help = "Enter:apply  ↑↓:history  C-r:search  Esc/C-c:cancel";
+                        let padding = width.saturating_sub(left_len + help.len());
+                        s.push(Span::styled(" ".repeat(padding), bg));
+                        s.push(Span::styled(
+                            help.to_string(),
+                            Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
                         ));
                     }
                     s
                 } else {
                     let filter_info = match &self.filter_query {
-                        Some(q) => format!(" [filter:{}] ", q.display_string()),
+                        Some(q) => format!("[filter:{}] ", q.display_string()),
                         None => String::new(),
                     };
-                    vec![Span::styled(
-                        format!(
-                            "{}j/k:nav  Enter:detail  /:filter  G:latest  C-d/u/f/b/e/y:scroll  C-c×2:quit",
-                            filter_info
+                    let left = format!("{}j/k:nav  Enter:detail  /:filter", filter_info);
+                    let right = "G:latest  C-d/u/f/b/e/y:scroll  C-c×2:quit";
+                    let padding = width.saturating_sub(left.len() + right.len());
+                    vec![
+                        Span::styled(left, Style::default().fg(Color::White).bg(Color::DarkGray)),
+                        Span::styled(" ".repeat(padding), bg),
+                        Span::styled(
+                            right.to_string(),
+                            Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
                         ),
-                        Style::default().fg(Color::White).bg(Color::DarkGray),
-                    )]
+                    ]
                 }
             }
             ViewMode::Detail => {
-                vec![Span::styled(
-                    "Backspace:back  j/k,C-d/u/f/b/e/y:scroll  C-c×2:quit",
-                    Style::default().fg(Color::White).bg(Color::DarkGray),
-                )]
+                let left = "q/Backspace:back  j/k,C-d/u/f/b/e/y:scroll";
+                let right = "C-c×2:quit";
+                let padding = width.saturating_sub(left.len() + right.len());
+                vec![
+                    Span::styled(left, Style::default().fg(Color::White).bg(Color::DarkGray)),
+                    Span::styled(" ".repeat(padding), bg),
+                    Span::styled(
+                        right.to_string(),
+                        Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
+                    ),
+                ]
             }
         };
 

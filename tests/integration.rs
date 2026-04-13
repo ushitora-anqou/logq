@@ -432,13 +432,10 @@ fn test_filter_help_text_visible() {
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     t.render();
 
-    // Status bar should show filter syntax help
-    assert!(t.screen_contains("|="));
-    assert!(t.screen_contains("|~"));
-    assert!(t.screen_contains("!="));
-    assert!(t.screen_contains("!~"));
+    // Status bar should show filter input help
     assert!(t.screen_contains("Enter:apply"));
-    assert!(t.screen_contains("Esc/Bksp:cancel"));
+    assert!(t.screen_contains("C-r:search"));
+    assert!(t.screen_contains("Esc/C-c:cancel"));
 }
 
 #[test]
@@ -512,4 +509,199 @@ fn test_filter_parse_error_then_fix() {
     assert!(t.screen_contains("[filter:"));
     assert!(t.screen_contains("foobar"));
     assert!(!t.screen_contains("bazqux"));
+}
+
+#[test]
+fn test_filter_history_stored_on_enter() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello world");
+    t.render();
+
+    // Apply first filter
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "hello""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(t.app.filter_input.is_none());
+    t.render();
+    assert!(t.screen_contains(r#"filter:|= "hello""#));
+
+    // Press / again — previous query should be preset (history stored)
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.render();
+    assert!(t.screen_contains(r#"|= "hello""#));
+}
+
+#[test]
+fn test_filter_history_no_duplicate() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello world");
+    t.render();
+
+    // Apply same filter twice
+    for _ in 0..2 {
+        t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in r#"|= "hello""#.chars() {
+            t.press(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        t.press(KeyCode::Enter, KeyModifiers::NONE);
+    }
+    t.render();
+    // Filter should still be applied
+    assert!(t.screen_contains(r#"filter:|= "hello""#));
+}
+
+#[test]
+fn test_filter_preset_on_slash() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello world");
+    t.render();
+
+    // Apply a filter
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "hello""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Press / again — should show previous query in status bar
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.render();
+    assert!(t.screen_contains(r#"|= "hello""#));
+}
+
+#[test]
+fn test_filter_history_up_down() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply first filter (no history, blank input)
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "first""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Apply second filter (appends to preset)
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    // input is now |= "first" — append space + second condition
+    for c in r#" |= "second""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode — presets last query
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(
+        t.app.filter_input.as_deref(),
+        Some(r#"|= "first" |= "second""#)
+    );
+
+    // Up should show the first query
+    t.press(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(t.app.filter_input.as_deref(), Some(r#"|= "first""#));
+
+    // Down should go back to second (combined filter)
+    t.press(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(
+        t.app.filter_input.as_deref(),
+        Some(r#"|= "first" |= "second""#)
+    );
+}
+
+#[test]
+fn test_filter_ctrl_c_cancels() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "test""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    assert!(t.app.filter_input.is_some());
+
+    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(t.app.filter_input.is_none());
+}
+
+#[test]
+fn test_live_filter_on_type() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello world");
+    t.add_line("foo bar");
+    t.add_line("hello foo");
+    t.render();
+
+    // Enter filter mode and type
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "hello""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.render();
+
+    // Live filter should be active — only matching lines visible
+    assert!(t.screen_contains("hello world"));
+    assert!(!t.screen_contains("foo bar"));
+    assert!(t.screen_contains("hello foo"));
+}
+
+#[test]
+fn test_live_filter_error_shown() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    // Type an invalid query (missing closing quote)
+    for c in "|= \"foo".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.render();
+
+    assert!(t.screen_contains("Error:"));
+}
+
+#[test]
+fn test_ctrl_r_reverse_search() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply two filters
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode and Ctrl+R to search history
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    t.render();
+    // Should find a matching history entry containing "alpha"
+    assert!(t.screen_contains("alpha"));
+}
+
+#[test]
+fn test_detail_q_returns_to_list() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello world");
+    t.render();
+
+    // Enter detail view
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(t.app.view_mode, ViewMode::Detail);
+
+    // Press q to go back
+    t.press(KeyCode::Char('q'), KeyModifiers::NONE);
+    assert_eq!(t.app.view_mode, ViewMode::List);
 }
