@@ -229,7 +229,9 @@ fn test_timestamp_display() {
 
 #[test]
 fn test_regex_filter() {
-    let states = run_logq("error timeout\ninfo ok\nerror disk\nCMD:/\nCMD:e\nCMD:r\nCMD:r\nCMD:.\nCMD:*\nCMD:t\nCMD:i\nCMD:m\nCMD:e\nCMD:o\nCMD:u\nCMD:t\nCMD:Enter\n");
+    let states = run_logq(
+        "error timeout\ninfo ok\nerror disk\nCMD:/\nCMD:e\nCMD:r\nCMD:r\nCMD:.\nCMD:*\nCMD:t\nCMD:i\nCMD:m\nCMD:e\nCMD:o\nCMD:u\nCMD:t\nCMD:Enter\n",
+    );
     // Find the state after Enter
     let final_state = states.last().unwrap();
     assert_eq!(final_state.filter.as_deref(), Some("err.*timeout"));
@@ -248,7 +250,9 @@ fn test_not_filter() {
 
 #[test]
 fn test_escape_clears_filter() {
-    let states = run_logq("alpha\nbeta\nalpha2\nCMD:/\nCMD:a\nCMD:l\nCMD:p\nCMD:h\nCMD:a\nCMD:Enter\nCMD:Esc\n");
+    let states = run_logq(
+        "alpha\nbeta\nalpha2\nCMD:/\nCMD:a\nCMD:l\nCMD:p\nCMD:h\nCMD:a\nCMD:Enter\nCMD:Esc\n",
+    );
     // After Enter (index 9): filter is set
     let after_enter = &states[9];
     assert_eq!(after_enter.filter.as_deref(), Some("alpha"));

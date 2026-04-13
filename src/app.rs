@@ -81,7 +81,10 @@ impl App {
 
     pub fn add_line(&mut self, line: String) {
         let timestamp = Local::now().format("%H:%M:%S%.3f").to_string();
-        self.lines.push(LogEntry { text: line, timestamp });
+        self.lines.push(LogEntry {
+            text: line,
+            timestamp,
+        });
         if self.lines.len() > self.max_lines {
             self.lines.remove(0);
             if self.selected > 0 {
@@ -125,12 +128,20 @@ impl App {
         match (&self.filter, &self.filter_regex) {
             (Some(_pattern), Some(re)) => {
                 let matched = re.is_match(text);
-                if self.filter_negated { !matched } else { matched }
+                if self.filter_negated {
+                    !matched
+                } else {
+                    matched
+                }
             }
             (Some(pattern), None) => {
                 // Regex compilation failed, fallback to literal
                 let matched = text.contains(pattern);
-                if self.filter_negated { !matched } else { matched }
+                if self.filter_negated {
+                    !matched
+                } else {
+                    matched
+                }
             }
             _ => true,
         }
@@ -351,7 +362,11 @@ impl App {
         let area = frame.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         self.render_breadcrumb(frame, chunks[0]);
@@ -427,9 +442,17 @@ impl App {
                             )
                         })
                         .collect();
-                    Line::from(std::iter::once(ts_span).chain(highlighted).collect::<Vec<_>>())
+                    Line::from(
+                        std::iter::once(ts_span)
+                            .chain(highlighted)
+                            .collect::<Vec<_>>(),
+                    )
                 } else {
-                    Line::from(std::iter::once(ts_span).chain(content_spans).collect::<Vec<_>>())
+                    Line::from(
+                        std::iter::once(ts_span)
+                            .chain(content_spans)
+                            .collect::<Vec<_>>(),
+                    )
                 }
             })
             .collect();
@@ -593,7 +616,13 @@ mod tests {
         app.add_line("b".to_string());
         app.add_line("c".to_string());
         app.add_line("d".to_string());
-        assert_eq!(app.lines.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["b", "c", "d"]);
+        assert_eq!(
+            app.lines
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c", "d"]
+        );
     }
 
     #[test]
@@ -603,7 +632,13 @@ mod tests {
         app.add_line("b".to_string());
         app.selected = 1;
         app.add_line("c".to_string());
-        assert_eq!(app.lines.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["b", "c"]);
+        assert_eq!(
+            app.lines
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
         assert_eq!(app.selected, 0);
     }
 
