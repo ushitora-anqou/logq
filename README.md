@@ -2,14 +2,16 @@
 
 A terminal UI viewer for NDJSON (newline-delimited JSON) and plain text streams, written in Rust.
 
-logq reads lines from stdin or a spawned command and displays them in an interactive TUI with syntax highlighting, filtering, and vim-style navigation.
+logq reads lines from stdin or a spawned command and displays them in an interactive TUI with syntax highlighting, regex filtering, timestamps, and vim-style navigation.
 
 ## Features
 
 - **Live tailing**: Lines stream in real-time like `tail -f`, with auto-scroll that pauses when you navigate away and resumes with `G`
+- **Timestamps**: Each line shows its received time (`HH:MM:SS.mmm`)
 - **JSON syntax highlighting**: Color-coded keys, strings, numbers, booleans, and null values
 - **Pretty-printed detail view**: Press Enter to expand a line into a readable, indented JSON view
-- **Substring filtering**: Type `/pattern` to show only matching lines
+- **Regex filtering**: Type `/pattern` to filter with regex; use `!pattern` to exclude matches
+- **Breadcrumb bar**: Shows current context (detail view, active filter) at the top of the screen
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
 - **Memory-bounded**: Configurable line limit discards oldest lines when exceeded
@@ -44,6 +46,7 @@ logq -- command arg1 arg2 ...
 | `k` / `Up`    | Move selection up               |
 | `Enter`       | Open detail view for selection  |
 | `/`           | Start filter input              |
+| `Esc`         | Clear active filter             |
 | `G`           | Jump to latest line (resume auto-scroll) |
 | `C-d`         | Scroll down half page           |
 | `C-u`         | Scroll up half page             |
@@ -58,9 +61,18 @@ logq -- command arg1 arg2 ...
 | Key           | Action                          |
 |---------------|---------------------------------|
 | `Enter`       | Apply filter                    |
-| `Esc`         | Cancel filter input             |
+| `Esc`         | Delete last character           |
 | `Backspace`   | Delete last character           |
 | `<char>`      | Append character to filter      |
+
+Filter patterns support Rust regex syntax. Prefix with `!` for negation.
+
+| Pattern         | Meaning                            |
+|-----------------|------------------------------------|
+| `error`         | Show lines containing "error"      |
+| `err.*timeout`  | Show lines matching the regex      |
+| `!error`        | Show lines NOT containing "error"  |
+| `!err.*timeout` | Exclude lines matching the regex   |
 
 ### Detail view
 
@@ -88,6 +100,12 @@ logq -- my-script.sh
 
 # Limit to 5000 lines
 cat large-file.ndjson | logq --max-lines 5000
+
+# Filter with regex
+# (inside logq) type /err.*timeout to show only matching lines
+
+# Exclude lines with NOT filter
+# (inside logq) type /!debug to hide debug-level logs
 ```
 
 ## License

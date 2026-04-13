@@ -9,7 +9,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use app::App;
 use clap::Parser;
 
-/// logq - NDJSON TUI viewer with live tailing and vim-style keybindings
+/// logq - TUI viewer for NDJSON and text streams with live tailing, regex filtering, and vim keybindings
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -18,7 +18,7 @@ struct Cli {
     max_lines: usize,
 
     /// Output app state as NDJSON after each input line (for testing)
-    #[arg(long)]
+    #[arg(long, hide = true)]
     json_output: bool,
 
     /// Command to execute (prefix with --)
