@@ -206,9 +206,16 @@ impl App {
                     }
                 }
             }
-            KeyCode::Esc | KeyCode::Backspace => {
+            KeyCode::Esc => {
+                self.filter_input = None;
+            }
+            KeyCode::Backspace => {
                 if let Some(input) = &mut self.filter_input {
-                    input.pop();
+                    if input.is_empty() {
+                        self.filter_input = None;
+                    } else {
+                        input.pop();
+                    }
                 }
             }
             KeyCode::Char(c) => {
@@ -447,7 +454,7 @@ impl App {
             ViewMode::List => {
                 if self.filter_input.is_some() {
                     let input = self.filter_input.as_deref().unwrap_or("");
-                    format!(" /{}", input)
+                    format!(" /{}  Enter:apply  Esc/Bksp:cancel  (!prefix:negate  regex:/.*/)", input)
                 } else {
                     let filter_info = match &self.filter {
                         Some(f) => format!(" [filter:{}] ", f),

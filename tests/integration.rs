@@ -325,6 +325,79 @@ fn test_not_filter() {
 }
 
 #[test]
+fn test_filter_backspace_empty_cancels() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Enter filter mode
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(t.app.filter_input.is_some());
+
+    // Backspace on empty input should cancel filter input mode
+    t.press(KeyCode::Backspace, KeyModifiers::NONE);
+    assert!(t.app.filter_input.is_none());
+
+    // Status bar should show normal list mode help, not filter input
+    t.render();
+    assert!(t.screen_contains("j/k:nav"));
+}
+
+#[test]
+fn test_filter_backspace_nonempty_removes_char() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "abc".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.render();
+    assert!(t.screen_contains("/abc"));
+
+    // Backspace should remove last char, not cancel
+    t.press(KeyCode::Backspace, KeyModifiers::NONE);
+    t.render();
+    assert!(t.app.filter_input.is_some());
+    assert!(t.screen_contains("/ab"));
+    assert!(!t.screen_contains("/abc"));
+}
+
+#[test]
+fn test_filter_esc_cancels() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "test".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    assert!(t.app.filter_input.is_some());
+
+    // Esc should always cancel filter input, even with text
+    t.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(t.app.filter_input.is_none());
+}
+
+#[test]
+fn test_filter_help_text_visible() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.render();
+
+    // Status bar should show filter syntax help
+    assert!(t.screen_contains("!prefix:negate"));
+    assert!(t.screen_contains("regex"));
+    assert!(t.screen_contains("Enter:apply"));
+    assert!(t.screen_contains("Esc/Bksp:cancel"));
+}
+
+#[test]
 fn test_escape_clears_filter() {
     let mut t = TestApp::new(10000);
     t.add_line("alpha");
