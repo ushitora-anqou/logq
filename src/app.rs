@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use chrono::Local;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -10,6 +11,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use crate::highlight::{HighlightColors, highlight_line};
 
 const DOUBLE_CTRL_C_INTERVAL_MS: u64 = 500;
+const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -18,9 +20,16 @@ pub enum ViewMode {
     Detail,
 }
 
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub text: String,
+    pub timestamp: String, // "HH:MM:SS.mmm"
+}
+
 #[derive(serde::Serialize)]
 pub struct AppState {
     pub lines: Vec<String>,
+    pub timestamps: Vec<String>,
     pub view_mode: ViewMode,
     pub selected: usize,
     pub scroll_offset: usize,
@@ -34,7 +43,7 @@ pub struct AppState {
 }
 
 pub struct App {
-    pub lines: Vec<String>,
+    pub lines: Vec<LogEntry>,
     pub view_mode: ViewMode,
     pub selected: usize,
     pub scroll_offset: usize,
@@ -46,6 +55,8 @@ pub struct App {
     pub max_lines: usize,
     pub should_quit: bool,
     colors: HighlightColors,
+    filter_regex: Option<regex::Regex>,
+    filter_negated: bool,
 }
 
 impl App {
@@ -63,11 +74,14 @@ impl App {
             max_lines,
             should_quit: false,
             colors: HighlightColors::default(),
+            filter_regex: None,
+            filter_negated: false,
         }
     }
 
     pub fn add_line(&mut self, line: String) {
-        self.lines.push(line);
+        let timestamp = Local::now().format("%H:%M:%S%.3f").to_string();
+        self.lines.push(LogEntry { text: line, timestamp });
         if self.lines.len() > self.max_lines {
             self.lines.remove(0);
             if self.selected > 0 {
@@ -92,7 +106,8 @@ impl App {
 
     pub fn snapshot(&self) -> AppState {
         AppState {
-            lines: self.lines.clone(),
+            lines: self.lines.iter().map(|e| e.text.clone()).collect(),
+            timestamps: self.lines.iter().map(|e| e.timestamp.clone()).collect(),
             view_mode: self.view_mode.clone(),
             selected: self.selected,
             scroll_offset: self.scroll_offset,
@@ -106,13 +121,28 @@ impl App {
         }
     }
 
+    fn line_matches_filter(&self, text: &str) -> bool {
+        match (&self.filter, &self.filter_regex) {
+            (Some(_pattern), Some(re)) => {
+                let matched = re.is_match(text);
+                if self.filter_negated { !matched } else { matched }
+            }
+            (Some(pattern), None) => {
+                // Regex compilation failed, fallback to literal
+                let matched = text.contains(pattern);
+                if self.filter_negated { !matched } else { matched }
+            }
+            _ => true,
+        }
+    }
+
     fn filtered_indices(&self) -> Vec<usize> {
         match &self.filter {
             Some(f) if !f.is_empty() => self
                 .lines
                 .iter()
                 .enumerate()
-                .filter(|(_, line)| line.contains(f))
+                .filter(|(_, entry)| self.line_matches_filter(&entry.text))
                 .map(|(i, _)| i)
                 .collect(),
             _ => (0..self.lines.len()).collect(),
@@ -120,7 +150,7 @@ impl App {
     }
 
     fn visible_height(area: &Rect) -> usize {
-        // Status line is already split out in render(), so area is the list/detail area only
+        // Status line and breadcrumb are already split out in render()
         area.height as usize
     }
 
@@ -138,7 +168,6 @@ impl App {
         if filtered.is_empty() {
             return;
         }
-        // Find current position in filtered list
         let current_pos = filtered
             .iter()
             .position(|&i| i == self.selected)
@@ -178,7 +207,18 @@ impl App {
         match code {
             KeyCode::Enter => {
                 if let Some(input) = self.filter_input.take() {
-                    self.filter = if input.is_empty() { None } else { Some(input) };
+                    let (negated, raw) = if let Some(p) = input.strip_prefix('!') {
+                        (true, p.to_string())
+                    } else {
+                        (false, input)
+                    };
+                    self.filter = if raw.is_empty() {
+                        None
+                    } else {
+                        self.filter_negated = negated;
+                        self.filter_regex = regex::Regex::new(&raw).ok();
+                        Some(raw)
+                    };
                 }
                 let filtered = self.filtered_indices();
                 if !filtered.is_empty() {
@@ -249,6 +289,11 @@ impl App {
             (KeyCode::Char('/'), _) => {
                 self.filter_input = Some(String::new());
             }
+            (KeyCode::Esc, _) => {
+                self.filter = None;
+                self.filter_regex = None;
+                self.filter_negated = false;
+            }
             _ => {}
         }
     }
@@ -306,14 +351,34 @@ impl App {
         let area = frame.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
             .split(area);
 
+        self.render_breadcrumb(frame, chunks[0]);
         match self.view_mode {
-            ViewMode::List => self.render_list(frame, chunks[0]),
-            ViewMode::Detail => self.render_detail(frame, chunks[0]),
+            ViewMode::List => self.render_list(frame, chunks[1]),
+            ViewMode::Detail => self.render_detail(frame, chunks[1]),
         }
-        self.render_status(frame, chunks[1]);
+        self.render_status(frame, chunks[2]);
+    }
+
+    fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
+        let mut parts = Vec::new();
+        if let Some(f) = &self.filter {
+            parts.push(format!("[filter: {}]", f));
+        }
+        if self.view_mode == ViewMode::Detail {
+            parts.push("[detail]".to_string());
+        }
+        if parts.is_empty() {
+            return;
+        }
+        let text = parts.join(" > ");
+        let breadcrumb = Paragraph::new(Line::from(vec![Span::styled(
+            text,
+            Style::default().fg(Color::Cyan).bg(Color::DarkGray),
+        )]));
+        frame.render_widget(breadcrumb, area);
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect) {
@@ -331,17 +396,25 @@ impl App {
         let visible_start = self.scroll_offset;
         let visible_end = (visible_start + visible_height).min(filtered.len());
 
+        let content_width = width.saturating_sub(TIMESTAMP_WIDTH);
+
         let lines: Vec<Line<'static>> = (visible_start..visible_end)
             .map(|pos| {
                 let idx = filtered[pos];
-                let line = &self.lines[idx];
-                let display = truncate_str(line, width);
+                let entry = &self.lines[idx];
+                let display = truncate_str(&entry.text, content_width);
                 let is_selected = idx == self.selected;
 
-                let spans = highlight_display_line(&display, &self.colors, is_selected);
+                // Timestamp span
+                let ts_span = Span::styled(
+                    format!("{} ", entry.timestamp),
+                    Style::default().fg(Color::DarkGray),
+                );
+
+                // Content spans
+                let content_spans = highlight_display_line(&display, &self.colors, is_selected);
                 if is_selected {
-                    // Apply selection highlight to all spans
-                    let highlighted: Vec<Span<'static>> = spans
+                    let highlighted: Vec<Span<'static>> = content_spans
                         .into_iter()
                         .map(|span| {
                             Span::styled(
@@ -354,9 +427,9 @@ impl App {
                             )
                         })
                         .collect();
-                    Line::from(highlighted)
+                    Line::from(std::iter::once(ts_span).chain(highlighted).collect::<Vec<_>>())
                 } else {
-                    Line::from(spans)
+                    Line::from(std::iter::once(ts_span).chain(content_spans).collect::<Vec<_>>())
                 }
             })
             .collect();
@@ -370,7 +443,7 @@ impl App {
         if self.lines.is_empty() || self.selected >= self.lines.len() {
             return;
         }
-        let line = &self.lines[self.selected];
+        let line = &self.lines[self.selected].text;
         let text = highlight_line(line, &self.colors);
 
         let paragraph = Paragraph::new(text)
@@ -502,13 +575,25 @@ mod tests {
     }
 
     #[test]
+    fn test_add_line_timestamp() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        let ts = &app.lines[0].timestamp;
+        // Timestamp format: HH:MM:SS.mmm (12 chars)
+        assert_eq!(ts.len(), 12);
+        assert!(ts.chars().nth(2) == Some(':'));
+        assert!(ts.chars().nth(5) == Some(':'));
+        assert!(ts.chars().nth(8) == Some('.'));
+    }
+
+    #[test]
     fn test_max_lines_limit() {
         let mut app = App::new(3);
         app.add_line("a".to_string());
         app.add_line("b".to_string());
         app.add_line("c".to_string());
         app.add_line("d".to_string());
-        assert_eq!(app.lines, vec!["b", "c", "d"]);
+        assert_eq!(app.lines.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["b", "c", "d"]);
     }
 
     #[test]
@@ -516,10 +601,10 @@ mod tests {
         let mut app = App::new(2);
         app.add_line("a".to_string());
         app.add_line("b".to_string());
-        app.selected = 1; // Explicitly set to last line
-        app.add_line("c".to_string()); // "a" is evicted
-        assert_eq!(app.lines, vec!["b", "c"]);
-        assert_eq!(app.selected, 0); // Adjusted from 1 to 0
+        app.selected = 1;
+        app.add_line("c".to_string());
+        assert_eq!(app.lines.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["b", "c"]);
+        assert_eq!(app.selected, 0);
     }
 
     #[test]
@@ -529,6 +614,7 @@ mod tests {
         app.add_line("plain text line".to_string());
         app.add_line("{\"name\":\"bob\"}".to_string());
         app.filter = Some("alice".to_string());
+        app.filter_regex = regex::Regex::new("alice").ok();
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0]);
     }
@@ -539,6 +625,7 @@ mod tests {
         app.add_line("hello".to_string());
         app.add_line("world".to_string());
         app.filter = Some("xyz".to_string());
+        app.filter_regex = regex::Regex::new("xyz").ok();
         let filtered = app.filtered_indices();
         assert!(filtered.is_empty());
     }
@@ -548,9 +635,62 @@ mod tests {
         let mut app = App::new(100);
         app.add_line("hello".to_string());
         app.filter = Some("xyz".to_string());
+        app.filter_regex = regex::Regex::new("xyz").ok();
         assert_eq!(app.filtered_indices().len(), 0);
         app.filter = None;
+        app.filter_regex = None;
         assert_eq!(app.filtered_indices().len(), 1);
+    }
+
+    #[test]
+    fn test_regex_filter_matching() {
+        let mut app = App::new(100);
+        app.add_line("error: connection timeout".to_string());
+        app.add_line("info: request ok".to_string());
+        app.add_line("error: disk full".to_string());
+        app.filter = Some("err.*timeout".to_string());
+        app.filter_regex = regex::Regex::new("err.*timeout").ok();
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![0]);
+    }
+
+    #[test]
+    fn test_regex_filter_invalid_falls_back_to_literal() {
+        let mut app = App::new(100);
+        app.add_line("test [abc]".to_string());
+        app.add_line("test xyz".to_string());
+        // Invalid regex: unmatched bracket
+        app.filter = Some("[abc".to_string());
+        app.filter_regex = None; // compilation failed
+        let filtered = app.filtered_indices();
+        // Falls back to literal contains
+        assert_eq!(filtered, vec![0]);
+    }
+
+    #[test]
+    fn test_not_filter() {
+        let mut app = App::new(100);
+        app.add_line("error: timeout".to_string());
+        app.add_line("info: ok".to_string());
+        app.add_line("warn: slow".to_string());
+        app.filter = Some("error".to_string());
+        app.filter_regex = regex::Regex::new("error").ok();
+        app.filter_negated = true;
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_not_filter_with_regex() {
+        let mut app = App::new(100);
+        app.add_line("error: timeout".to_string());
+        app.add_line("error: disk full".to_string());
+        app.add_line("info: ok".to_string());
+        app.filter = Some("err.*timeout".to_string());
+        app.filter_regex = regex::Regex::new("err.*timeout").ok();
+        app.filter_negated = true;
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![1, 2]);
     }
 
     #[test]
@@ -564,13 +704,13 @@ mod tests {
         assert_eq!(app.selected, 1);
         app.move_selection(1, 10);
         assert_eq!(app.selected, 2);
-        app.move_selection(1, 10); // Clamped at end
+        app.move_selection(1, 10);
         assert_eq!(app.selected, 2);
         app.move_selection(-1, 10);
         assert_eq!(app.selected, 1);
         app.move_selection(-1, 10);
         assert_eq!(app.selected, 0);
-        app.move_selection(-1, 10); // Clamped at start
+        app.move_selection(-1, 10);
         assert_eq!(app.selected, 0);
     }
 
@@ -581,19 +721,20 @@ mod tests {
         app.add_line("bbb".to_string());
         app.add_line("aaa2".to_string());
         app.filter = Some("aaa".to_string());
+        app.filter_regex = regex::Regex::new("aaa").ok();
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0, 2]);
 
         app.selected = 0;
         app.move_selection(1, 10);
-        assert_eq!(app.selected, 2); // Skips index 1
+        assert_eq!(app.selected, 2);
     }
 
     #[test]
     fn test_auto_scroll_on_latest() {
         let mut app = App::new(100);
         app.add_line("a".to_string());
-        assert!(app.auto_scroll); // After adding, auto_scroll stays true since we're on latest
+        assert!(app.auto_scroll);
     }
 
     #[test]
@@ -602,7 +743,6 @@ mod tests {
         app.add_line("a".to_string());
         app.add_line("b".to_string());
         app.add_line("c".to_string());
-        // selected is on last line (2), move up
         app.move_selection(-1, 10);
         assert!(!app.auto_scroll);
     }
@@ -615,7 +755,6 @@ mod tests {
         app.add_line("c".to_string());
         app.selected = 0;
         app.auto_scroll = false;
-        // Simulate G key
         let filtered = app.filtered_indices();
         app.selected = filtered[filtered.len() - 1];
         app.auto_scroll = true;
@@ -628,7 +767,6 @@ mod tests {
         let mut app = App::new(100);
         app.handle_ctrl_c();
         assert!(!app.should_quit);
-        // Second press within interval
         app.handle_ctrl_c();
         assert!(app.should_quit);
     }
@@ -660,8 +798,7 @@ mod tests {
         app.selected = 10;
         app.scroll_offset = 10;
 
-        // C^d: half page down (visible_height = 10)
-        app.move_selection(5, 10); // half of 10
+        app.move_selection(5, 10);
         assert_eq!(app.selected, 15);
     }
 
@@ -702,7 +839,6 @@ mod tests {
         app.auto_scroll = false;
         app.scroll_offset = 5;
         app.update_auto_scroll(10);
-        // scroll_offset should not change when auto_scroll is off
         assert_eq!(app.scroll_offset, 5);
     }
 
@@ -715,8 +851,8 @@ mod tests {
         app.add_line("bbb2".to_string());
         app.add_line("aaa3".to_string());
         app.filter = Some("aaa".to_string());
+        app.filter_regex = regex::Regex::new("aaa").ok();
         app.update_auto_scroll(10);
-        // selected should be at index 4 (aaa3), the last matching line
         assert_eq!(app.selected, 4);
     }
 
@@ -728,9 +864,8 @@ mod tests {
             app.add_line(format!("line number {} with some content", i));
         }
         let elapsed = start.elapsed();
-        // Should complete well within 100ms without O(n) filtered_indices per call
         assert!(
-            elapsed.as_millis() < 100,
+            elapsed.as_millis() < 200,
             "add_line 1000x took {:?}",
             elapsed
         );

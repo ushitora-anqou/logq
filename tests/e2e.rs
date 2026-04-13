@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 #[derive(serde::Deserialize)]
 struct AppState {
     lines: Vec<String>,
+    #[allow(dead_code)]
+    timestamps: Vec<String>,
     view_mode: String,
     selected: usize,
     #[allow(dead_code)]
@@ -211,4 +213,47 @@ fn test_auto_scroll_follows_rapid_input() {
     assert!(last.auto_scroll);
     assert_eq!(last.selected, 99);
     assert_eq!(last.total_lines, 100);
+}
+
+#[test]
+fn test_timestamp_display() {
+    let states = run_logq("hello\n");
+    assert_eq!(states.len(), 1);
+    // Timestamp format: HH:MM:SS.mmm (12 chars)
+    let ts = &states[0].timestamps[0];
+    assert_eq!(ts.len(), 12);
+    assert_eq!(&ts[2..3], ":");
+    assert_eq!(&ts[5..6], ":");
+    assert_eq!(&ts[8..9], ".");
+}
+
+#[test]
+fn test_regex_filter() {
+    let states = run_logq("error timeout\ninfo ok\nerror disk\nCMD:/\nCMD:e\nCMD:r\nCMD:r\nCMD:.\nCMD:*\nCMD:t\nCMD:i\nCMD:m\nCMD:e\nCMD:o\nCMD:u\nCMD:t\nCMD:Enter\n");
+    // Find the state after Enter
+    let final_state = states.last().unwrap();
+    assert_eq!(final_state.filter.as_deref(), Some("err.*timeout"));
+    assert_eq!(final_state.filtered_count, 1);
+}
+
+#[test]
+fn test_not_filter() {
+    let states = run_logq(
+        "error timeout\ninfo ok\nwarn slow\nCMD:/\nCMD:!\nCMD:e\nCMD:r\nCMD:r\nCMD:o\nCMD:r\nCMD:Enter\n",
+    );
+    let final_state = states.last().unwrap();
+    assert_eq!(final_state.filter.as_deref(), Some("error"));
+    assert_eq!(final_state.filtered_count, 2); // "info ok" and "warn slow"
+}
+
+#[test]
+fn test_escape_clears_filter() {
+    let states = run_logq("alpha\nbeta\nalpha2\nCMD:/\nCMD:a\nCMD:l\nCMD:p\nCMD:h\nCMD:a\nCMD:Enter\nCMD:Esc\n");
+    // After Enter (index 9): filter is set
+    let after_enter = &states[9];
+    assert_eq!(after_enter.filter.as_deref(), Some("alpha"));
+    // After Esc (index 10): filter is cleared
+    let after_esc = &states[10];
+    assert_eq!(after_esc.filter, None);
+    assert_eq!(after_esc.filtered_count, 3);
 }
