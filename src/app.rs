@@ -168,9 +168,6 @@ impl App {
 
     fn handle_filter_input(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
         match code {
-            KeyCode::Esc => {
-                self.filter_input = None;
-            }
             KeyCode::Enter => {
                 if let Some(input) = self.filter_input.take() {
                     self.filter = if input.is_empty() { None } else { Some(input) };
@@ -184,7 +181,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Esc | KeyCode::Backspace => {
                 if let Some(input) = &mut self.filter_input {
                     input.pop();
                 }
