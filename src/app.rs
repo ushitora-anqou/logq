@@ -253,9 +253,10 @@ impl App {
         }
     }
 
-    fn visible_height(area: &Rect) -> usize {
-        // Status line and breadcrumb are already split out in render()
-        area.height as usize
+    fn visible_height(&self, area: &Rect) -> usize {
+        // Breadcrumb(1) + help(2) = 3; during filter input add input(1) = 4
+        let overhead: usize = if self.filter_input.is_some() { 4 } else { 3 };
+        (area.height as usize).saturating_sub(overhead)
     }
 
     fn ensure_selection_visible(&mut self, visible_height: usize) {
@@ -288,7 +289,7 @@ impl App {
             if key.kind != KeyEventKind::Press {
                 return;
             }
-            let visible_height = Self::visible_height(&area);
+            let visible_height = self.visible_height(&area);
 
             // Handle filter input mode
             if self.filter_input.is_some() {
@@ -622,29 +623,51 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .split(area);
 
-        self.render_breadcrumb(frame, chunks[0]);
-        match self.view_mode {
-            ViewMode::List => self.render_list(frame, chunks[1]),
-            ViewMode::Detail => self.render_detail(frame, chunks[1]),
-        }
-        self.render_status(frame, chunks[2]);
-
-        // Show cursor during filter input
         if self.filter_input.is_some() {
+            // Filter input mode: breadcrumb + content + input + help1 + help2
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ])
+                .split(area);
+
+            self.render_breadcrumb(frame, chunks[0]);
+            match self.view_mode {
+                ViewMode::List => self.render_list(frame, chunks[1]),
+                ViewMode::Detail => self.render_detail(frame, chunks[1]),
+            }
+            self.render_input_line(frame, chunks[2]);
+            self.render_help_line1(frame, chunks[3]);
+            self.render_help_line2(frame, chunks[4]);
+
             let input = self.filter_input.as_deref().unwrap_or("");
-            let prefix_len = 2; // " /"
-            let cursor_x = (prefix_len + input.len()) as u16;
-            let cursor_y = chunks[2].y;
-            frame.set_cursor_position((cursor_x, cursor_y));
+            let cursor_x = (2 + input.len()) as u16;
+            frame.set_cursor_position((cursor_x, chunks[2].y));
+        } else {
+            // Normal mode: breadcrumb + content + help1 + help2
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ])
+                .split(area);
+
+            self.render_breadcrumb(frame, chunks[0]);
+            match self.view_mode {
+                ViewMode::List => self.render_list(frame, chunks[1]),
+                ViewMode::Detail => self.render_detail(frame, chunks[1]),
+            }
+            self.render_help_line1(frame, chunks[2]);
+            self.render_help_line2(frame, chunks[3]);
         }
     }
 
@@ -747,84 +770,88 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn render_status(&self, frame: &mut Frame, area: Rect) {
+    fn render_input_line(&self, frame: &mut Frame, area: Rect) {
         let bg = Style::default().bg(Color::DarkGray);
         let width = area.width as usize;
 
-        let spans: Vec<Span<'_>> = match self.view_mode {
-            ViewMode::List => {
-                if self.filter_input.is_some() {
-                    let input = self.filter_input.as_deref().unwrap_or("");
-                    let mut s = vec![Span::styled(
-                        format!(" /{}", input),
-                        Style::default().fg(Color::White).bg(Color::DarkGray),
-                    )];
+        let input = self.filter_input.as_deref().unwrap_or("");
+        let mut s = vec![Span::styled(
+            format!(" /{}", input),
+            Style::default().fg(Color::White).bg(Color::DarkGray),
+        )];
 
-                    let error = self
-                        .live_filter_error
-                        .as_deref()
-                        .or(self.filter_error.as_deref());
-                    if let Some(err) = error {
-                        s.push(Span::styled(
-                            format!("  Error: {}", err),
-                            Style::default().fg(Color::Red).bg(Color::DarkGray),
-                        ));
-                    }
+        let error = self
+            .live_filter_error
+            .as_deref()
+            .or(self.filter_error.as_deref());
+        if let Some(err) = error {
+            s.push(Span::styled(
+                format!("  Error: {}", err),
+                Style::default().fg(Color::Red).bg(Color::DarkGray),
+            ));
+        }
 
-                    let left_len: usize = s.iter().map(|sp| sp.content.len()).sum();
-                    if self.history_search_active {
-                        let help = "C-r:next  Enter:apply  Esc/C-c:cancel";
-                        let padding = width.saturating_sub(left_len + help.len());
-                        s.push(Span::styled(" ".repeat(padding), bg));
-                        s.push(Span::styled(
-                            help.to_string(),
-                            Style::default().fg(Color::Yellow).bg(Color::DarkGray),
-                        ));
-                    } else {
-                        let help = "Enter:apply  ↑↓:history  C-r:search  Esc/C-c:cancel";
-                        let padding = width.saturating_sub(left_len + help.len());
-                        s.push(Span::styled(" ".repeat(padding), bg));
-                        s.push(Span::styled(
-                            help.to_string(),
-                            Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
-                        ));
-                    }
-                    s
+        let left_len: usize = s.iter().map(|sp| sp.content.len()).sum();
+        let padding = width.saturating_sub(left_len);
+        if padding > 0 {
+            s.push(Span::styled(" ".repeat(padding), bg));
+        }
+
+        let status = Paragraph::new(Line::from(s));
+        frame.render_widget(status, area);
+    }
+
+    fn render_help_line1(&self, frame: &mut Frame, area: Rect) {
+        let text = match self.view_mode {
+            ViewMode::List if self.filter_input.is_some() => {
+                if self.history_search_active {
+                    " C-r:next  Enter:apply  Esc/C-c:cancel"
                 } else {
-                    let filter_info = match &self.filter_query {
-                        Some(q) => format!("[filter:{}] ", q.display_string()),
-                        None => String::new(),
-                    };
-                    let left = format!("{}j/k:nav  Enter:detail  /:filter", filter_info);
-                    let right = "G:latest  C-d/u/f/b/e/y:scroll  C-c×2:quit";
-                    let padding = width.saturating_sub(left.len() + right.len());
-                    vec![
-                        Span::styled(left, Style::default().fg(Color::White).bg(Color::DarkGray)),
-                        Span::styled(" ".repeat(padding), bg),
-                        Span::styled(
-                            right.to_string(),
-                            Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
-                        ),
-                    ]
+                    " Enter:apply  ↑↓:history  C-r:search  Esc/C-c:cancel"
                 }
             }
-            ViewMode::Detail => {
-                let left = "q/Backspace:back  j/k,C-d/u/f/b/e/y:scroll";
-                let right = "C-c×2:quit";
-                let padding = width.saturating_sub(left.len() + right.len());
-                vec![
-                    Span::styled(left, Style::default().fg(Color::White).bg(Color::DarkGray)),
-                    Span::styled(" ".repeat(padding), bg),
-                    Span::styled(
-                        right.to_string(),
-                        Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
-                    ),
-                ]
+            ViewMode::List => {
+                let filter_info = match &self.filter_query {
+                    Some(q) => format!("[filter:{}] ", q.display_string()),
+                    None => String::new(),
+                };
+                return self.render_help_spans(frame, area, &format!(
+                    "{} j/k nav  Enter detail  / filter  G latest  Esc clear",
+                    filter_info
+                ));
+            }
+            ViewMode::Detail => " q/Bksp/Esc back  j/k scroll",
+        };
+
+        self.render_help_spans(frame, area, text);
+    }
+
+    fn render_help_line2(&self, frame: &mut Frame, area: Rect) {
+        let text = match self.view_mode {
+            ViewMode::List if self.filter_input.is_some() => {
+                " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~"
+            }
+            ViewMode::List | ViewMode::Detail => {
+                " C-d/u half  C-f/b full  C-e/y line  C-c×2 quit"
             }
         };
 
-        let status = Paragraph::new(Line::from(spans));
-        frame.render_widget(status, area);
+        self.render_help_spans(frame, area, text);
+    }
+
+    fn render_help_spans(&self, frame: &mut Frame, area: Rect, text: &str) {
+        let bg = Style::default().bg(Color::DarkGray);
+        let width = area.width as usize;
+        let padding = width.saturating_sub(text.len());
+        let spans = vec![
+            Span::styled(
+                text.to_string(),
+                Style::default().fg(Color::White).bg(Color::DarkGray),
+            ),
+            Span::styled(" ".repeat(padding), bg),
+        ];
+        let paragraph = Paragraph::new(Line::from(spans));
+        frame.render_widget(paragraph, area);
     }
 
     pub fn poll_events(&self) -> std::io::Result<bool> {

@@ -384,7 +384,7 @@ fn test_filter_backspace_empty_cancels() {
 
     // Status bar should show normal list mode help, not filter input
     t.render();
-    assert!(t.screen_contains("j/k:nav"));
+    assert!(t.screen_contains("j/k nav"));
 }
 
 #[test]
