@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -61,6 +62,36 @@ impl FilterQuery {
             .collect::<Vec<_>>()
             .join(" ")
     }
+}
+
+fn history_file_path() -> Option<PathBuf> {
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(dirs_data_home)
+        .unwrap_or_else(|| PathBuf::from("~/.local/share"));
+    let expanded = expand_tilde(base);
+    if expanded.is_absolute() {
+        Some(expanded.join("logq").join("filter_history"))
+    } else {
+        None
+    }
+}
+
+fn dirs_data_home() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".local").join("share"))
+}
+
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    if path.starts_with("~")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        let remainder = path.strip_prefix("~").unwrap_or(&path);
+        return PathBuf::from(home).join(remainder);
+    }
+    path
 }
 
 fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
@@ -189,6 +220,27 @@ impl App {
             filter_draft: None,
             history_search_active: false,
             history_search_start: None,
+        }
+    }
+
+    pub fn load_history(&mut self) {
+        if let Some(path) = history_file_path()
+            && let Ok(data) = std::fs::read_to_string(&path)
+        {
+            let loaded: Vec<String> = data.lines().map(String::from).collect();
+            if !loaded.is_empty() {
+                self.filter_history = loaded;
+            }
+        }
+    }
+
+    pub fn save_history(&self) {
+        if let Some(path) = history_file_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let content = self.filter_history.join("\n");
+            let _ = std::fs::write(&path, content);
         }
     }
 
@@ -815,10 +867,14 @@ impl App {
                     Some(q) => format!("[filter:{}] ", q.display_string()),
                     None => String::new(),
                 };
-                return self.render_help_spans(frame, area, &format!(
-                    "{} j/k nav  Enter detail  / filter  G latest  Esc clear",
-                    filter_info
-                ));
+                return self.render_help_spans(
+                    frame,
+                    area,
+                    &format!(
+                        "{} j/k nav  Enter detail  / filter  G latest  Esc clear",
+                        filter_info
+                    ),
+                );
             }
             ViewMode::Detail => " q/Bksp/Esc back  j/k scroll",
         };
@@ -831,9 +887,7 @@ impl App {
             ViewMode::List if self.filter_input.is_some() => {
                 " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~"
             }
-            ViewMode::List | ViewMode::Detail => {
-                " C-d/u half  C-f/b full  C-e/y line  C-c×2 quit"
-            }
+            ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-c×2 quit",
         };
 
         self.render_help_spans(frame, area, text);
@@ -1440,5 +1494,30 @@ mod tests {
             ],
         };
         assert_eq!(query.display_string(), r#"|= "foo" != "bar""#);
+    }
+
+    #[test]
+    fn test_save_and_load_history() {
+        let dir = std::env::temp_dir().join("logq_test_history");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("filter_history");
+
+        // Write history
+        {
+            let app = App {
+                filter_history: vec!["|= \"foo\"".to_string(), "|= \"bar\"".to_string()],
+                ..App::new(100)
+            };
+            let content = app.filter_history.join("\n");
+            std::fs::write(&path, &content).unwrap();
+        }
+
+        // Read history
+        let data = std::fs::read_to_string(&path).unwrap();
+        let loaded: Vec<String> = data.lines().map(String::from).collect();
+        assert_eq!(loaded, vec!["|= \"foo\"", "|= \"bar\""]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

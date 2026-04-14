@@ -72,6 +72,7 @@ fn main() -> io::Result<()> {
     };
 
     let mut app = App::new(cli.max_lines);
+    app.load_history();
     let result = run_app(&mut terminal, &mut app, rx, &mut child);
 
     if let Some(ref mut c) = child {
@@ -89,6 +90,7 @@ fn main() -> io::Result<()> {
         });
     }
 
+    app.save_history();
     ratatui::restore();
     result
 }
