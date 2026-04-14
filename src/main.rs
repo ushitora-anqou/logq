@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::time::Duration;
 
 use clap::Parser;
 use logq::app::App;
@@ -13,7 +14,7 @@ struct Cli {
     #[arg(long, default_value = "10000")]
     max_lines: usize,
 
-    /// Command to execute (prefix with --)
+    /// Command to execute. Use `logq -- command args` when the command starts with `-`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -62,7 +63,7 @@ fn main() -> io::Result<()> {
     let saved_stdin = redirect_stdin_to_tty()?;
 
     let mut terminal = ratatui::init();
-    let (rx, _child) = if command.is_none() && saved_stdin.is_none() {
+    let (rx, mut child) = if command.is_none() && saved_stdin.is_none() {
         // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
         let (_, rx) = tokio::sync::mpsc::unbounded_channel();
         (rx, None)
@@ -71,7 +72,22 @@ fn main() -> io::Result<()> {
     };
 
     let mut app = App::new(cli.max_lines);
-    let result = run_app(&mut terminal, &mut app, rx);
+    let result = run_app(&mut terminal, &mut app, rx, &mut child);
+
+    if let Some(ref mut c) = child {
+        if let Some(pid) = c.id() {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
+        }
+        rt.block_on(async {
+            tokio::select! {
+                _ = c.wait() => {}
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    let _ = c.start_kill();
+                    let _ = c.wait().await;
+                }
+            }
+        });
+    }
 
     ratatui::restore();
     result
@@ -81,6 +97,7 @@ fn run_app(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    _child: &mut Option<tokio::process::Child>,
 ) -> io::Result<()> {
     loop {
         // Receive new lines (non-blocking)
