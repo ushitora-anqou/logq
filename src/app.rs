@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::Local;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -11,7 +11,6 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::highlight::{HighlightColors, highlight_line};
 
-const DOUBLE_CTRL_C_INTERVAL_MS: u64 = 500;
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,7 +179,6 @@ pub struct App {
     pub selected: usize,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
-    pub last_ctrl_c: Option<Instant>,
     pub detail_scroll: u16,
     pub filter_input: Option<String>,
     pub max_lines: usize,
@@ -205,7 +203,7 @@ impl App {
             selected: 0,
             scroll_offset: 0,
             auto_scroll: true,
-            last_ctrl_c: None,
+
             detail_scroll: 0,
             filter_input: None,
             max_lines,
@@ -566,8 +564,8 @@ impl App {
         let max_idx = filtered.len().saturating_sub(1);
 
         match (code, modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                self.handle_ctrl_c();
+            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                self.handle_ctrl_x();
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                 self.move_selection(1, visible_height);
@@ -626,8 +624,8 @@ impl App {
 
     fn handle_detail_key(&mut self, code: KeyCode, modifiers: KeyModifiers, visible_height: usize) {
         match (code, modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                self.handle_ctrl_c();
+            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                self.handle_ctrl_x();
             }
             (KeyCode::Backspace, _) | (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
                 self.view_mode = ViewMode::List;
@@ -662,15 +660,8 @@ impl App {
         }
     }
 
-    fn handle_ctrl_c(&mut self) {
-        match self.last_ctrl_c {
-            Some(last) if last.elapsed() < Duration::from_millis(DOUBLE_CTRL_C_INTERVAL_MS) => {
-                self.should_quit = true;
-            }
-            _ => {
-                self.last_ctrl_c = Some(Instant::now());
-            }
-        }
+    fn handle_ctrl_x(&mut self) {
+        self.should_quit = true;
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
@@ -857,9 +848,9 @@ impl App {
         let text = match self.view_mode {
             ViewMode::List if self.filter_input.is_some() => {
                 if self.history_search_active {
-                    " C-r:next  Enter:apply  Esc/C-c:cancel"
+                    " C-r:next  Enter:apply  Esc:cancel"
                 } else {
-                    " Enter:apply  ↑↓:history  C-r:search  Esc/C-c:cancel"
+                    " Enter:apply  ↑↓:history  C-r:search  Esc:cancel"
                 }
             }
             ViewMode::List => {
@@ -887,7 +878,7 @@ impl App {
             ViewMode::List if self.filter_input.is_some() => {
                 " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~"
             }
-            ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-c×2 quit",
+            ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-x quit",
         };
 
         self.render_help_spans(frame, area, text);
@@ -1188,19 +1179,10 @@ mod tests {
     }
 
     #[test]
-    fn test_double_ctrl_c() {
+    fn test_ctrl_x_quit() {
         let mut app = App::new(100);
-        app.handle_ctrl_c();
-        assert!(!app.should_quit);
-        app.handle_ctrl_c();
+        app.handle_ctrl_x();
         assert!(app.should_quit);
-    }
-
-    #[test]
-    fn test_single_ctrl_c_no_quit() {
-        let mut app = App::new(100);
-        app.handle_ctrl_c();
-        assert!(!app.should_quit);
     }
 
     #[test]

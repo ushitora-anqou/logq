@@ -176,10 +176,7 @@ fn test_quit() {
     t.add_line("line1");
     t.render();
 
-    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
-    assert!(!t.app.should_quit);
-
-    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    t.press(KeyCode::Char('x'), KeyModifiers::CONTROL);
     assert!(t.app.should_quit);
 }
 
@@ -259,10 +256,7 @@ fn test_quit_with_no_input() {
     let mut t = TestApp::new(10000);
     t.render();
 
-    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
-    assert!(!t.app.should_quit);
-
-    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    t.press(KeyCode::Char('x'), KeyModifiers::CONTROL);
     assert!(t.app.should_quit);
 }
 
@@ -435,7 +429,7 @@ fn test_filter_help_text_visible() {
     // Status bar should show filter input help
     assert!(t.screen_contains("Enter:apply"));
     assert!(t.screen_contains("C-r:search"));
-    assert!(t.screen_contains("Esc/C-c:cancel"));
+    assert!(t.screen_contains("Esc:cancel"));
 }
 
 #[test]

@@ -54,7 +54,7 @@ logq -- command arg1 arg2 ...
 | `C-b`         | Scroll up full page             |
 | `C-e`         | Scroll down one line            |
 | `C-y`         | Scroll up one line              |
-| `C-c` `C-c`   | Quit (press twice quickly)      |
+| `C-x`         | Quit                            |
 
 ### Filter input mode
 
@@ -88,7 +88,7 @@ After pressing `/`, type a query using the following operators. Values must be e
 | `C-b`         | Scroll up full page             |
 | `C-e`         | Scroll down one line            |
 | `C-y`         | Scroll up one line              |
-| `C-c` `C-c`   | Quit (press twice quickly)      |
+| `C-x`         | Quit                            |
 
 ## Examples
 
