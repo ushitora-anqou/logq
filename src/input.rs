@@ -21,6 +21,8 @@ pub fn spawn_line_reader(
                 .args(&cmd_args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .process_group(0)
+                .kill_on_drop(true)
                 .spawn()
                 .expect("Failed to spawn command");
 

@@ -75,14 +75,18 @@ fn main() -> io::Result<()> {
     app.load_history();
     let result = run_app(&mut terminal, &mut app, rx, &mut child);
 
-    if let Some(ref mut c) = child {
-        if let Some(pid) = c.id() {
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
-        }
+    if let Some(ref mut c) = child
+        && let Some(pid) = c.id()
+    {
+        let pgid = pid as libc::pid_t;
+        // Send SIGTERM to the entire process group
+        unsafe { libc::kill(-pgid, libc::SIGTERM) };
         rt.block_on(async {
             tokio::select! {
                 _ = c.wait() => {}
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    // Send SIGKILL to the entire process group
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
                     let _ = c.start_kill();
                     let _ = c.wait().await;
                 }
