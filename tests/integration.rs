@@ -519,7 +519,7 @@ fn test_filter_history_stored_on_enter() {
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(t.app.filter_input.is_none());
     t.render();
-    assert!(t.screen_contains(r#"filter:|= "hello""#));
+    assert!(t.screen_contains(r#"[filter: |= "hello"]"#));
 
     // Press / again — previous query should be preset (history stored)
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
@@ -542,8 +542,9 @@ fn test_filter_history_no_duplicate() {
         t.press(KeyCode::Enter, KeyModifiers::NONE);
     }
     t.render();
-    // Filter should still be applied
-    assert!(t.screen_contains(r#"filter:|= "hello""#));
+    // Filter should still be applied — breadcrumb shows [filter: |= "hello"]
+    assert!(t.screen_contains(r#"|= "hello""#));
+    assert!(t.screen_contains("[filter:"));
 }
 
 #[test]

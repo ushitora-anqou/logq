@@ -854,17 +854,10 @@ impl App {
                 }
             }
             ViewMode::List => {
-                let filter_info = match &self.filter_query {
-                    Some(q) => format!("[filter:{}] ", q.display_string()),
-                    None => String::new(),
-                };
                 return self.render_help_spans(
                     frame,
                     area,
-                    &format!(
-                        "{} j/k nav  Enter detail  / filter  G latest  Esc clear",
-                        filter_info
-                    ),
+                    " j/k nav  Enter detail  / filter  G latest  Esc clear",
                 );
             }
             ViewMode::Detail => " q/Bksp/Esc back  j/k scroll",
