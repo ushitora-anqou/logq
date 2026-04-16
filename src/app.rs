@@ -9,6 +9,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
+use serde_json::Value;
+
 use crate::highlight::{HighlightColors, highlight_line};
 
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
@@ -26,23 +28,53 @@ pub struct LogEntry {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FilterValue {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    Null,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum FilterOp {
     Contains,
     RegexMatch,
     NotContains,
     NotRegexMatch,
+    JsonEquals,
+    JsonNotEquals,
+    JsonRegexMatch,
+    JsonNotRegexMatch,
 }
 
 #[derive(Debug, Clone)]
 pub struct FilterCondition {
     pub operator: FilterOp,
-    pub value: String,
+    pub value: FilterValue,
     pub regex: Option<regex::Regex>,
+    pub json_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FilterQuery {
     pub conditions: Vec<FilterCondition>,
+}
+
+impl FilterValue {
+    fn display_string(&self) -> String {
+        match self {
+            FilterValue::String(s) => format!("\"{}\"", s),
+            FilterValue::Number(n) => {
+                if n.fract() == 0.0 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{}", n)
+                }
+            }
+            FilterValue::Boolean(b) => b.to_string(),
+            FilterValue::Null => "null".to_string(),
+        }
+    }
 }
 
 impl FilterQuery {
@@ -55,8 +87,16 @@ impl FilterQuery {
                     FilterOp::RegexMatch => "|~",
                     FilterOp::NotContains => "!=",
                     FilterOp::NotRegexMatch => "!~",
+                    FilterOp::JsonEquals => "=",
+                    FilterOp::JsonNotEquals => "!=",
+                    FilterOp::JsonRegexMatch => "=~",
+                    FilterOp::JsonNotRegexMatch => "!~",
                 };
-                format!(r#"{} "{}""#, op, c.value)
+                if let Some(key) = &c.json_key {
+                    format!("| {} {} {}", key, op, c.value.display_string())
+                } else {
+                    format!("{} {}", op, c.value.display_string())
+                }
             })
             .collect::<Vec<_>>()
             .join(" ")
@@ -93,6 +133,34 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
     path
 }
 
+fn lookup_json_key<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for part in key.split('.') {
+        current = current.get(part)?;
+    }
+    Some(current)
+}
+
+fn compare_json_value(actual: &Value, expected: &FilterValue) -> bool {
+    match (actual, expected) {
+        (Value::String(s), FilterValue::String(e)) => s == e,
+        (Value::Number(n), FilterValue::Number(e)) => n.as_f64() == Some(*e),
+        (Value::Bool(b), FilterValue::Boolean(e)) => b == e,
+        (Value::Null, FilterValue::Null) => true,
+        _ => false,
+    }
+}
+
+fn json_value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => value.to_string(),
+    }
+}
+
 fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
     let s = input.trim();
     if s.is_empty() {
@@ -113,64 +181,220 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
             break;
         }
 
-        // Read operator (2 chars)
-        if pos + 1 >= len {
-            return Err(format!("Expected operator at position {}", pos));
-        }
-        let op: FilterOp = match (chars[pos], chars[pos + 1]) {
-            ('|', '=') => FilterOp::Contains,
-            ('|', '~') => FilterOp::RegexMatch,
-            ('!', '=') => FilterOp::NotContains,
-            ('!', '~') => FilterOp::NotRegexMatch,
-            _ => return Err(format!("Expected operator |= |~ != !~ at position {}", pos)),
-        };
-        pos += 2;
+        if chars[pos] == '|' {
+            if pos + 1 < len && (chars[pos + 1] == '=' || chars[pos + 1] == '~') {
+                // Existing whole-line operators: |= or |~
+                let op: FilterOp = match chars[pos + 1] {
+                    '=' => FilterOp::Contains,
+                    '~' => FilterOp::RegexMatch,
+                    _ => unreachable!(),
+                };
+                pos += 2;
 
-        // Skip whitespace
-        while pos < len && chars[pos] == ' ' {
-            pos += 1;
-        }
-
-        // Expect opening quote
-        if pos >= len || chars[pos] != '"' {
-            return Err(format!("Expected '\"' at position {}", pos));
-        }
-        pos += 1;
-
-        // Read value until closing quote
-        let mut value = String::new();
-        loop {
-            if pos >= len {
-                return Err("Unterminated string".to_string());
-            }
-            match chars[pos] {
-                '"' => {
-                    pos += 1;
-                    break;
-                }
-                _ => {
-                    value.push(chars[pos]);
+                // Skip whitespace
+                while pos < len && chars[pos] == ' ' {
                     pos += 1;
                 }
+
+                let value = parse_quoted_string(&chars, &mut pos, len)?;
+                let regex = match op {
+                    FilterOp::RegexMatch => Some(
+                        regex::Regex::new(&value).map_err(|e| format!("Invalid regex: {}", e))?,
+                    ),
+                    _ => None,
+                };
+
+                conditions.push(FilterCondition {
+                    operator: op,
+                    value: FilterValue::String(value),
+                    regex,
+                    json_key: None,
+                });
+            } else {
+                // JSON key filter: | key = "value" or | key != "value" etc.
+                pos += 1; // skip '|'
+
+                // Skip whitespace
+                while pos < len && chars[pos] == ' ' {
+                    pos += 1;
+                }
+
+                // Read key name
+                let key_start = pos;
+                while pos < len
+                    && (chars[pos].is_alphanumeric()
+                        || chars[pos] == '_'
+                        || chars[pos] == '-'
+                        || chars[pos] == '.')
+                {
+                    pos += 1;
+                }
+                let key: String = chars[key_start..pos].iter().collect();
+                if key.is_empty() {
+                    return Err(format!("Expected key name at position {}", pos));
+                }
+
+                // Skip whitespace
+                while pos < len && chars[pos] == ' ' {
+                    pos += 1;
+                }
+
+                // Read operator: =, !=, =~, !~
+                let (op, needs_regex) = if pos + 1 < len && chars[pos] == '!' {
+                    if chars[pos + 1] == '=' {
+                        pos += 2;
+                        (FilterOp::JsonNotEquals, false)
+                    } else if chars[pos + 1] == '~' {
+                        pos += 2;
+                        (FilterOp::JsonNotRegexMatch, true)
+                    } else {
+                        return Err(format!("Expected operator = != =~ !~ at position {}", pos));
+                    }
+                } else if pos < len && chars[pos] == '=' {
+                    pos += 1;
+                    if pos < len && chars[pos] == '~' {
+                        pos += 1;
+                        (FilterOp::JsonRegexMatch, true)
+                    } else {
+                        (FilterOp::JsonEquals, false)
+                    }
+                } else {
+                    return Err(format!("Expected operator = != =~ !~ at position {}", pos));
+                };
+
+                // Skip whitespace
+                while pos < len && chars[pos] == ' ' {
+                    pos += 1;
+                }
+
+                // Read value
+                let (value, regex) = if pos < len && chars[pos] == '"' {
+                    // Quoted string
+                    let s = parse_quoted_string(&chars, &mut pos, len)?;
+                    let r = if needs_regex {
+                        Some(regex::Regex::new(&s).map_err(|e| format!("Invalid regex: {}", e))?)
+                    } else {
+                        None
+                    };
+                    (FilterValue::String(s), r)
+                } else if pos + 3 < len && chars[pos..pos + 4] == ['t', 'r', 'u', 'e'] {
+                    pos += 4;
+                    (FilterValue::Boolean(true), None)
+                } else if pos + 4 < len && chars[pos..pos + 5] == ['f', 'a', 'l', 's', 'e'] {
+                    pos += 5;
+                    (FilterValue::Boolean(false), None)
+                } else if pos + 3 < len && chars[pos..pos + 4] == ['n', 'u', 'l', 'l'] {
+                    pos += 4;
+                    (FilterValue::Null, None)
+                } else {
+                    // Number
+                    let num_start = pos;
+                    if pos < len && (chars[pos] == '-' || chars[pos] == '+') {
+                        pos += 1;
+                    }
+                    let has_digits = {
+                        let start = pos;
+                        while pos < len && (chars[pos].is_ascii_digit()) {
+                            pos += 1;
+                        }
+                        pos > start
+                    };
+                    if !has_digits {
+                        return Err(format!("Expected value at position {}", num_start));
+                    }
+                    if pos < len && chars[pos] == '.' {
+                        pos += 1;
+                        while pos < len && chars[pos].is_ascii_digit() {
+                            pos += 1;
+                        }
+                    }
+                    let num_str: String = chars[num_start..pos].iter().collect();
+                    let n: f64 = num_str
+                        .parse()
+                        .map_err(|_| format!("Invalid number: {}", num_str))?;
+                    (FilterValue::Number(n), None)
+                };
+
+                conditions.push(FilterCondition {
+                    operator: op,
+                    value,
+                    regex,
+                    json_key: Some(key),
+                });
             }
+        } else if chars[pos] == '!' {
+            // Existing whole-line operators: != or !~
+            if pos + 1 >= len {
+                return Err(format!("Expected operator at position {}", pos));
+            }
+            let op: FilterOp = match chars[pos + 1] {
+                '=' => FilterOp::NotContains,
+                '~' => FilterOp::NotRegexMatch,
+                _ => return Err(format!("Expected operator |= |~ != !~ at position {}", pos)),
+            };
+            pos += 2;
+
+            // Skip whitespace
+            while pos < len && chars[pos] == ' ' {
+                pos += 1;
+            }
+
+            let value = parse_quoted_string(&chars, &mut pos, len)?;
+            let regex = match op {
+                FilterOp::NotRegexMatch => {
+                    Some(regex::Regex::new(&value).map_err(|e| format!("Invalid regex: {}", e))?)
+                }
+                _ => None,
+            };
+
+            conditions.push(FilterCondition {
+                operator: op,
+                value: FilterValue::String(value),
+                regex,
+                json_key: None,
+            });
+        } else {
+            return Err(format!(
+                "Expected operator |= |~ != !~ or | key at position {}",
+                pos
+            ));
         }
-
-        // Compile regex if needed
-        let regex = match op {
-            FilterOp::RegexMatch | FilterOp::NotRegexMatch => {
-                Some(regex::Regex::new(&value).map_err(|e| format!("Invalid regex: {}", e))?)
-            }
-            _ => None,
-        };
-
-        conditions.push(FilterCondition {
-            operator: op,
-            value,
-            regex,
-        });
     }
 
     Ok(FilterQuery { conditions })
+}
+
+fn parse_quoted_string(chars: &[char], pos: &mut usize, len: usize) -> Result<String, String> {
+    if *pos >= len || chars[*pos] != '"' {
+        return Err(format!("Expected '\"' at position {}", pos));
+    }
+    *pos += 1;
+    let mut value = String::new();
+    loop {
+        if *pos >= len {
+            return Err("Unterminated string".to_string());
+        }
+        match chars[*pos] {
+            '\\' => {
+                *pos += 1;
+                if *pos >= len {
+                    return Err("Unterminated escape".to_string());
+                }
+                value.push('\\');
+                value.push(chars[*pos]);
+                *pos += 1;
+            }
+            '"' => {
+                *pos += 1;
+                break;
+            }
+            _ => {
+                value.push(chars[*pos]);
+                *pos += 1;
+            }
+        }
+    }
+    Ok(value)
 }
 
 pub struct App {
@@ -281,12 +505,49 @@ impl App {
     fn line_matches_filter(&self, text: &str) -> bool {
         match self.active_filter_query() {
             Some(query) => query.conditions.iter().all(|c| match c.operator {
-                FilterOp::Contains => text.contains(&c.value),
-                FilterOp::NotContains => !text.contains(&c.value),
+                FilterOp::Contains => match &c.value {
+                    FilterValue::String(s) => text.contains(s.as_str()),
+                    _ => false,
+                },
+                FilterOp::NotContains => match &c.value {
+                    FilterValue::String(s) => !text.contains(s.as_str()),
+                    _ => false,
+                },
                 FilterOp::RegexMatch => c.regex.as_ref().unwrap().is_match(text),
                 FilterOp::NotRegexMatch => !c.regex.as_ref().unwrap().is_match(text),
+                FilterOp::JsonEquals
+                | FilterOp::JsonNotEquals
+                | FilterOp::JsonRegexMatch
+                | FilterOp::JsonNotRegexMatch => self.json_value_matches(text, c),
             }),
             None => true,
+        }
+    }
+
+    fn json_value_matches(&self, text: &str, condition: &FilterCondition) -> bool {
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return false;
+        };
+        let key = condition.json_key.as_deref().unwrap();
+        let target = lookup_json_key(&value, key);
+        let Some(target) = target else {
+            return matches!(
+                condition.operator,
+                FilterOp::JsonNotEquals | FilterOp::JsonNotRegexMatch
+            );
+        };
+        match condition.operator {
+            FilterOp::JsonEquals => compare_json_value(target, &condition.value),
+            FilterOp::JsonNotEquals => !compare_json_value(target, &condition.value),
+            FilterOp::JsonRegexMatch => {
+                let s = json_value_to_string(target);
+                condition.regex.as_ref().unwrap().is_match(&s)
+            }
+            FilterOp::JsonNotRegexMatch => {
+                let s = json_value_to_string(target);
+                !condition.regex.as_ref().unwrap().is_match(&s)
+            }
+            _ => false,
         }
     }
 
@@ -869,7 +1130,7 @@ impl App {
     fn render_help_line2(&self, frame: &mut Frame, area: Rect) {
         let text = match self.view_mode {
             ViewMode::List if self.filter_input.is_some() => {
-                " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~"
+                " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~  | key = !="
             }
             ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-x quit",
         };
@@ -1040,8 +1301,9 @@ mod tests {
         app.filter_query = Some(FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::Contains,
-                value: "alice".to_string(),
+                value: FilterValue::String("alice".to_string()),
                 regex: None,
+                json_key: None,
             }],
         });
         let filtered = app.filtered_indices();
@@ -1056,8 +1318,9 @@ mod tests {
         app.filter_query = Some(FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::Contains,
-                value: "xyz".to_string(),
+                value: FilterValue::String("xyz".to_string()),
                 regex: None,
+                json_key: None,
             }],
         });
         let filtered = app.filtered_indices();
@@ -1071,8 +1334,9 @@ mod tests {
         app.filter_query = Some(FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::Contains,
-                value: "xyz".to_string(),
+                value: FilterValue::String("xyz".to_string()),
                 regex: None,
+                json_key: None,
             }],
         });
         assert_eq!(app.filtered_indices().len(), 0);
@@ -1089,8 +1353,9 @@ mod tests {
         app.filter_query = Some(FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::RegexMatch,
-                value: "err.*timeout".to_string(),
+                value: FilterValue::String("err.*timeout".to_string()),
                 regex: regex::Regex::new("err.*timeout").ok(),
+                json_key: None,
             }],
         });
         let filtered = app.filtered_indices();
@@ -1127,8 +1392,9 @@ mod tests {
         app.filter_query = Some(FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::Contains,
-                value: "aaa".to_string(),
+                value: FilterValue::String("aaa".to_string()),
                 regex: None,
+                json_key: None,
             }],
         });
         let filtered = app.filtered_indices();
@@ -1253,8 +1519,9 @@ mod tests {
         app.filter_query = Some(FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::Contains,
-                value: "aaa".to_string(),
+                value: FilterValue::String("aaa".to_string()),
                 regex: None,
+                json_key: None,
             }],
         });
         app.update_auto_scroll(10);
@@ -1283,7 +1550,10 @@ mod tests {
         let query = parse_filter_query(r#"|= "foo""#).unwrap();
         assert_eq!(query.conditions.len(), 1);
         assert_eq!(query.conditions[0].operator, FilterOp::Contains);
-        assert_eq!(query.conditions[0].value, "foo");
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("foo".to_string())
+        );
     }
 
     #[test]
@@ -1291,7 +1561,10 @@ mod tests {
         let query = parse_filter_query(r#"|~ "err.*""#).unwrap();
         assert_eq!(query.conditions.len(), 1);
         assert_eq!(query.conditions[0].operator, FilterOp::RegexMatch);
-        assert_eq!(query.conditions[0].value, "err.*");
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("err.*".to_string())
+        );
         assert!(query.conditions[0].regex.is_some());
     }
 
@@ -1300,7 +1573,10 @@ mod tests {
         let query = parse_filter_query(r#"!= "bar""#).unwrap();
         assert_eq!(query.conditions.len(), 1);
         assert_eq!(query.conditions[0].operator, FilterOp::NotContains);
-        assert_eq!(query.conditions[0].value, "bar");
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("bar".to_string())
+        );
     }
 
     #[test]
@@ -1308,7 +1584,10 @@ mod tests {
         let query = parse_filter_query(r#"!~ "baz""#).unwrap();
         assert_eq!(query.conditions.len(), 1);
         assert_eq!(query.conditions[0].operator, FilterOp::NotRegexMatch);
-        assert_eq!(query.conditions[0].value, "baz");
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("baz".to_string())
+        );
         assert!(query.conditions[0].regex.is_some());
     }
 
@@ -1317,9 +1596,15 @@ mod tests {
         let query = parse_filter_query(r#"|= "foo" != "bar""#).unwrap();
         assert_eq!(query.conditions.len(), 2);
         assert_eq!(query.conditions[0].operator, FilterOp::Contains);
-        assert_eq!(query.conditions[0].value, "foo");
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("foo".to_string())
+        );
         assert_eq!(query.conditions[1].operator, FilterOp::NotContains);
-        assert_eq!(query.conditions[1].value, "bar");
+        assert_eq!(
+            query.conditions[1].value,
+            FilterValue::String("bar".to_string())
+        );
     }
 
     #[test]
@@ -1364,8 +1649,9 @@ mod tests {
         let query = FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::Contains,
-                value: "foo".to_string(),
+                value: FilterValue::String("foo".to_string()),
                 regex: None,
+                json_key: None,
             }],
         };
         let app = App {
@@ -1381,8 +1667,9 @@ mod tests {
         let query = FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::NotContains,
-                value: "foo".to_string(),
+                value: FilterValue::String("foo".to_string()),
                 regex: None,
+                json_key: None,
             }],
         };
         let app = App {
@@ -1398,8 +1685,9 @@ mod tests {
         let query = FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::RegexMatch,
-                value: "err.*".to_string(),
+                value: FilterValue::String("err.*".to_string()),
                 regex: regex::Regex::new("err.*").ok(),
+                json_key: None,
             }],
         };
         let app = App {
@@ -1415,8 +1703,9 @@ mod tests {
         let query = FilterQuery {
             conditions: vec![FilterCondition {
                 operator: FilterOp::NotRegexMatch,
-                value: "err.*".to_string(),
+                value: FilterValue::String("err.*".to_string()),
                 regex: regex::Regex::new("err.*").ok(),
+                json_key: None,
             }],
         };
         let app = App {
@@ -1433,13 +1722,15 @@ mod tests {
             conditions: vec![
                 FilterCondition {
                     operator: FilterOp::Contains,
-                    value: "error".to_string(),
+                    value: FilterValue::String("error".to_string()),
                     regex: None,
+                    json_key: None,
                 },
                 FilterCondition {
                     operator: FilterOp::NotContains,
-                    value: "timeout".to_string(),
+                    value: FilterValue::String("timeout".to_string()),
                     regex: None,
+                    json_key: None,
                 },
             ],
         };
@@ -1458,13 +1749,15 @@ mod tests {
             conditions: vec![
                 FilterCondition {
                     operator: FilterOp::Contains,
-                    value: "foo".to_string(),
+                    value: FilterValue::String("foo".to_string()),
                     regex: None,
+                    json_key: None,
                 },
                 FilterCondition {
                     operator: FilterOp::NotContains,
-                    value: "bar".to_string(),
+                    value: FilterValue::String("bar".to_string()),
                     regex: None,
+                    json_key: None,
                 },
             ],
         };
@@ -1494,5 +1787,424 @@ mod tests {
         assert_eq!(loaded, vec!["|= \"foo\"", "|= \"bar\""]);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // JSON key filter parser tests
+
+    #[test]
+    fn test_parse_json_key_equals_string() {
+        let query = parse_filter_query(r#"| name = "alice""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::JsonEquals);
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("alice".to_string())
+        );
+        assert_eq!(query.conditions[0].json_key, Some("name".to_string()));
+        assert!(query.conditions[0].regex.is_none());
+    }
+
+    #[test]
+    fn test_parse_json_key_not_equals() {
+        let query = parse_filter_query(r#"| name != "bob""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::JsonNotEquals);
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("bob".to_string())
+        );
+        assert_eq!(query.conditions[0].json_key, Some("name".to_string()));
+    }
+
+    #[test]
+    fn test_parse_json_key_regex_match() {
+        let query = parse_filter_query(r#"| msg =~ "err.*""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::JsonRegexMatch);
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("err.*".to_string())
+        );
+        assert_eq!(query.conditions[0].json_key, Some("msg".to_string()));
+        assert!(query.conditions[0].regex.is_some());
+    }
+
+    #[test]
+    fn test_parse_json_key_not_regex_match() {
+        let query = parse_filter_query(r#"| msg !~ "err.*""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::JsonNotRegexMatch);
+        assert_eq!(
+            query.conditions[0].value,
+            FilterValue::String("err.*".to_string())
+        );
+        assert_eq!(query.conditions[0].json_key, Some("msg".to_string()));
+        assert!(query.conditions[0].regex.is_some());
+    }
+
+    #[test]
+    fn test_parse_json_key_number() {
+        let query = parse_filter_query(r#"| count = 42"#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].operator, FilterOp::JsonEquals);
+        assert_eq!(query.conditions[0].value, FilterValue::Number(42.0));
+        assert_eq!(query.conditions[0].json_key, Some("count".to_string()));
+    }
+
+    #[test]
+    fn test_parse_json_key_negative_number() {
+        let query = parse_filter_query(r#"| temp = -3"#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].value, FilterValue::Number(-3.0));
+    }
+
+    #[test]
+    fn test_parse_json_key_float() {
+        let query = parse_filter_query(r#"| ratio = 2.5"#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].value, FilterValue::Number(2.5));
+    }
+
+    #[test]
+    fn test_parse_json_key_boolean_true() {
+        let query = parse_filter_query(r#"| active = true"#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].value, FilterValue::Boolean(true));
+    }
+
+    #[test]
+    fn test_parse_json_key_boolean_false() {
+        let query = parse_filter_query(r#"| active = false"#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].value, FilterValue::Boolean(false));
+    }
+
+    #[test]
+    fn test_parse_json_key_null() {
+        let query = parse_filter_query(r#"| result = null"#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].value, FilterValue::Null);
+    }
+
+    #[test]
+    fn test_parse_json_nested_key() {
+        let query = parse_filter_query(r#"| user.name = "alice""#).unwrap();
+        assert_eq!(query.conditions.len(), 1);
+        assert_eq!(query.conditions[0].json_key, Some("user.name".to_string()));
+    }
+
+    #[test]
+    fn test_parse_mixed_filters() {
+        let query = parse_filter_query(r#"|= "foo" | key1 = "value1" != "bar""#).unwrap();
+        assert_eq!(query.conditions.len(), 3);
+        assert_eq!(query.conditions[0].operator, FilterOp::Contains);
+        assert_eq!(query.conditions[0].json_key, None);
+        assert_eq!(query.conditions[1].operator, FilterOp::JsonEquals);
+        assert_eq!(query.conditions[1].json_key, Some("key1".to_string()));
+        assert_eq!(query.conditions[2].operator, FilterOp::NotContains);
+        assert_eq!(query.conditions[2].json_key, None);
+    }
+
+    #[test]
+    fn test_parse_json_key_with_underscore_and_hyphen() {
+        let query = parse_filter_query(r#"| my_key-name = "value""#).unwrap();
+        assert_eq!(
+            query.conditions[0].json_key,
+            Some("my_key-name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_error_json_key_missing_value() {
+        assert!(parse_filter_query(r#"| key ="#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_json_key_invalid_regex() {
+        assert!(parse_filter_query(r#"| key =~ "[invalid""#).is_err());
+    }
+
+    // JSON key filter matching tests
+
+    #[test]
+    fn test_json_key_equals_string_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::String("alice".to_string()),
+                regex: None,
+                json_key: Some("name".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"name":"alice"}"#));
+    }
+
+    #[test]
+    fn test_json_key_equals_string_no_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::String("bob".to_string()),
+                regex: None,
+                json_key: Some("name".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(!app.line_matches_filter(r#"{"name":"alice"}"#));
+    }
+
+    #[test]
+    fn test_json_key_not_equals() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonNotEquals,
+                value: FilterValue::String("bob".to_string()),
+                regex: None,
+                json_key: Some("name".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"name":"alice"}"#));
+        assert!(!app.line_matches_filter(r#"{"name":"bob"}"#));
+    }
+
+    #[test]
+    fn test_json_key_number_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::Number(30.0),
+                regex: None,
+                json_key: Some("age".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"age":30}"#));
+        assert!(!app.line_matches_filter(r#"{"age":"30"}"#));
+    }
+
+    #[test]
+    fn test_json_key_boolean_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::Boolean(true),
+                regex: None,
+                json_key: Some("active".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"active":true}"#));
+        assert!(!app.line_matches_filter(r#"{"active":false}"#));
+        assert!(!app.line_matches_filter(r#"{"active":"true"}"#));
+    }
+
+    #[test]
+    fn test_json_key_null_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::Null,
+                regex: None,
+                json_key: Some("result".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"result":null}"#));
+        assert!(!app.line_matches_filter(r#"{"result":"null"}"#));
+    }
+
+    #[test]
+    fn test_json_key_nested_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::String("alice".to_string()),
+                regex: None,
+                json_key: Some("user.name".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"user":{"name":"alice"}}"#));
+        assert!(!app.line_matches_filter(r#"{"user":{"name":"bob"}}"#));
+    }
+
+    #[test]
+    fn test_json_key_missing_key_equals() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::String("alice".to_string()),
+                regex: None,
+                json_key: Some("missing".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(!app.line_matches_filter(r#"{"name":"alice"}"#));
+    }
+
+    #[test]
+    fn test_json_key_missing_key_not_equals() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonNotEquals,
+                value: FilterValue::String("bob".to_string()),
+                regex: None,
+                json_key: Some("missing".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        // Key doesn't exist, so "not equals bob" is true
+        assert!(app.line_matches_filter(r#"{"name":"alice"}"#));
+    }
+
+    #[test]
+    fn test_json_key_non_json_line() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::String("alice".to_string()),
+                regex: None,
+                json_key: Some("name".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(!app.line_matches_filter("plain text line"));
+    }
+
+    #[test]
+    fn test_json_key_regex_match() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonRegexMatch,
+                value: FilterValue::String("err.*".to_string()),
+                regex: regex::Regex::new("err.*").ok(),
+                json_key: Some("msg".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"msg":"error: timeout"}"#));
+        assert!(!app.line_matches_filter(r#"{"msg":"info: ok"}"#));
+    }
+
+    #[test]
+    fn test_json_key_regex_on_number() {
+        let query = FilterQuery {
+            conditions: vec![FilterCondition {
+                operator: FilterOp::JsonRegexMatch,
+                value: FilterValue::String("4.*".to_string()),
+                regex: regex::Regex::new("4.*").ok(),
+                json_key: Some("count".to_string()),
+            }],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"count":42}"#));
+        assert!(!app.line_matches_filter(r#"{"count":13}"#));
+    }
+
+    #[test]
+    fn test_mixed_filter_and_json_key() {
+        let query = FilterQuery {
+            conditions: vec![
+                FilterCondition {
+                    operator: FilterOp::Contains,
+                    value: FilterValue::String("error".to_string()),
+                    regex: None,
+                    json_key: None,
+                },
+                FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("timeout".to_string()),
+                    regex: None,
+                    json_key: Some("type".to_string()),
+                },
+            ],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"type":"timeout","msg":"error occurred"}"#));
+        assert!(!app.line_matches_filter(r#"{"type":"disk","msg":"error occurred"}"#));
+        assert!(!app.line_matches_filter(r#"{"type":"timeout","msg":"info ok"}"#));
+    }
+
+    #[test]
+    fn test_json_key_display_string() {
+        let query = FilterQuery {
+            conditions: vec![
+                FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("alice".to_string()),
+                    regex: None,
+                    json_key: Some("name".to_string()),
+                },
+                FilterCondition {
+                    operator: FilterOp::JsonNotEquals,
+                    value: FilterValue::Number(42.0),
+                    regex: None,
+                    json_key: Some("age".to_string()),
+                },
+            ],
+        };
+        assert_eq!(query.display_string(), r#"| name = "alice" | age != 42"#);
+    }
+
+    #[test]
+    fn test_json_key_display_boolean_and_null() {
+        let query = FilterQuery {
+            conditions: vec![
+                FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::Boolean(true),
+                    regex: None,
+                    json_key: Some("active".to_string()),
+                },
+                FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::Null,
+                    regex: None,
+                    json_key: Some("result".to_string()),
+                },
+            ],
+        };
+        assert_eq!(query.display_string(), "| active = true | result = null");
     }
 }
