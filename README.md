@@ -69,11 +69,11 @@ After pressing `/`, type a query using the following operators. Values must be e
 
 | Query                | Meaning                                      |
 |----------------------|----------------------------------------------|
-| `|= "error"`         | Show lines containing "error"                |
-| `|~ "err.*timeout"`  | Show lines matching the regex                |
+| `\|= "error"`        | Show lines containing "error"                |
+| `\|~ "err.*timeout"` | Show lines matching the regex                |
 | `!= "debug"`         | Show lines NOT containing "debug"            |
 | `!~ "err.*"`         | Exclude lines matching the regex             |
-| `|= "error" != "timeout"` | Show lines containing "error" AND not containing "timeout" |
+| `\|= "error" != "timeout"` | Show lines containing "error" AND not containing "timeout" |
 
 ### JSON key/value filters
 
@@ -81,19 +81,19 @@ Filter by JSON fields using `| key op value`. Values can be strings (`"..."`), n
 
 | Query                          | Meaning                                          |
 |--------------------------------|--------------------------------------------------|
-| `| level = "error"`            | JSON where `level` equals `"error"`              |
-| `| count != 0`                 | JSON where `count` is not 0                      |
-| `| msg =~ "err.*"`             | JSON where `msg` matches the regex               |
-| `| active = true`              | JSON where `active` is true                      |
-| `| user.name = "alice"`        | JSON where nested `user.name` equals `"alice"`   |
+| `\| level = "error"`            | JSON where `level` equals `"error"`              |
+| `\| count != 0`                 | JSON where `count` is not 0                      |
+| `\| msg =~ "err.*"`             | JSON where `msg` matches the regex               |
+| `\| active = true`              | JSON where `active` is true                      |
+| `\| user.name = "alice"`        | JSON where nested `user.name` equals `"alice"`   |
 
 JSON key conditions support `and`, `or`, and parentheses for grouping:
 
 | Query                          | Meaning                                          |
 |--------------------------------|--------------------------------------------------|
-| `| level = "error" and count > 0` | Both conditions must match                    |
-| `| level = "error" or level = "warn"` | Either condition matches                  |
-| `| (level = "error" or level = "warn") and active = true` | Grouped with parens |
+| `\| level = "error" and count > 0` | Both conditions must match                    |
+| `\| level = "error" or level = "warn"` | Either condition matches                  |
+| `\| (level = "error" or level = "warn") and active = true` | Grouped with parens |
 
 Plain-text conditions (`|=`, `!=`, `|~`, `!~`) cannot use `and`/`or` — they are always ANDed at the top level.
 
