@@ -363,7 +363,7 @@ fn test_multiple_conditions_filter() {
 }
 
 #[test]
-fn test_filter_backspace_empty_cancels() {
+fn test_filter_backspace_empty_stays_in_mode() {
     let mut t = TestApp::new(10000);
     t.add_line("hello");
     t.render();
@@ -372,8 +372,12 @@ fn test_filter_backspace_empty_cancels() {
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     assert!(t.app.filter_input.is_some());
 
-    // Backspace on empty input should cancel filter input mode
+    // Backspace on empty input should NOT cancel filter input mode
     t.press(KeyCode::Backspace, KeyModifiers::NONE);
+    assert!(t.app.filter_input.is_some());
+
+    // Ctrl-C should cancel filter input mode
+    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert!(t.app.filter_input.is_none());
 
     // Status bar should show normal list mode help, not filter input
@@ -430,6 +434,49 @@ fn test_filter_help_text_visible() {
     assert!(t.screen_contains("Enter:apply"));
     assert!(t.screen_contains("C-r:search"));
     assert!(t.screen_contains("Esc:cancel"));
+}
+
+#[test]
+fn test_filter_input_no_slash_displayed() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.render();
+
+    // Input line (3rd from bottom) should NOT contain "/" prefix
+    // Layout: breadcrumb + content + input_line + help1 + help2
+    let input_row = HEIGHT - 3;
+    let input_text = t.row_text(input_row);
+    // Input line should start with a space (no "/" prefix)
+    assert!(
+        input_text.starts_with(' '),
+        "input line should start with space, got: {:?}",
+        &input_text[..input_text.len().min(20)]
+    );
+    assert!(
+        !input_text.starts_with(" /"),
+        "input line should not start with ' /', got: {:?}",
+        &input_text[..input_text.len().min(20)]
+    );
+}
+
+#[test]
+fn test_filter_ctrl_c_cancels() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "|= \"test\"".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    assert!(t.app.filter_input.is_some());
+
+    // Ctrl-C should cancel filter input mode
+    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(t.app.filter_input.is_none());
 }
 
 #[test]
@@ -604,22 +651,6 @@ fn test_filter_history_up_down() {
         t.app.filter_input.as_deref(),
         Some(r#"|= "first" |= "second""#)
     );
-}
-
-#[test]
-fn test_filter_ctrl_c_cancels() {
-    let mut t = TestApp::new(10000);
-    t.add_line("hello");
-    t.render();
-
-    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    for c in r#"|= "test""#.chars() {
-        t.press(KeyCode::Char(c), KeyModifiers::NONE);
-    }
-    assert!(t.app.filter_input.is_some());
-
-    t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
-    assert!(t.app.filter_input.is_none());
 }
 
 #[test]

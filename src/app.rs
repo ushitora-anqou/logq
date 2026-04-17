@@ -827,14 +827,7 @@ impl App {
             KeyCode::Backspace => {
                 if let Some(input) = &mut self.filter_input {
                     if input.is_empty() {
-                        self.filter_input = None;
-                        self.filter_error = None;
-                        self.live_filter_query = None;
-                        self.live_filter_error = None;
-                        self.filter_draft = None;
-                        self.filter_history_index = None;
-                        self.history_search_active = false;
-                        self.history_search_start = None;
+                        // Stay in filter input mode when input is empty
                     } else {
                         input.pop();
                         self.filter_error = None;
@@ -1084,7 +1077,7 @@ impl App {
             self.render_help_line2(frame, chunks[4]);
 
             let input = self.filter_input.as_deref().unwrap_or("");
-            let cursor_x = (2 + input.len()) as u16;
+            let cursor_x = (1 + input.len()) as u16;
             frame.set_cursor_position((cursor_x, chunks[2].y));
         } else {
             // Normal mode: breadcrumb + content + help1 + help2
@@ -1213,7 +1206,7 @@ impl App {
 
         let input = self.filter_input.as_deref().unwrap_or("");
         let mut s = vec![Span::styled(
-            format!(" /{}", input),
+            format!(" {}", input),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )];
 
@@ -1263,7 +1256,7 @@ impl App {
     fn render_help_line2(&self, frame: &mut Frame, area: Rect) {
         let text = match self.view_mode {
             ViewMode::List if self.filter_input.is_some() => {
-                " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~  | key = !=  and/or ()"
+                " Bksp delete  C-c:cancel  syntax: |= \"text\"  |~ /regex/  != !~  | key = !=  and/or ()"
             }
             ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-x quit",
         };
