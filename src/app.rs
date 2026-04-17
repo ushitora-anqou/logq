@@ -631,7 +631,7 @@ impl App {
                     self.live_filter_error = None;
                 }
                 Err(msg) => {
-                    self.live_filter_query = None;
+                    // Keep the previous live_filter_query so results stay filtered
                     self.live_filter_error = Some(msg);
                 }
             }
@@ -2206,5 +2206,54 @@ mod tests {
             ],
         };
         assert_eq!(query.display_string(), "| active = true | result = null");
+    }
+
+    #[test]
+    fn test_live_filter_keeps_previous_valid_on_parse_error() {
+        let mut app = App::new(100);
+        app.add_line("foo line".to_string());
+        app.add_line("bar line".to_string());
+        app.add_line("foo bar line".to_string());
+
+        // Start filter input mode with a valid query
+        app.filter_input = Some(r#"|= "foo""#.to_string());
+        app.update_live_filter();
+        assert!(app.live_filter_query.is_some());
+        assert!(app.live_filter_error.is_none());
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![0, 2]);
+
+        // Add invalid suffix: parse error, but previous valid query should be kept
+        app.filter_input = Some(r#"|= "foo" |"#.to_string());
+        app.update_live_filter();
+        assert!(
+            app.live_filter_query.is_some(),
+            "live_filter_query should keep previous valid query on parse error"
+        );
+        assert!(app.live_filter_error.is_some());
+        let filtered = app.filtered_indices();
+        assert_eq!(
+            filtered,
+            vec![0, 2],
+            "should still filter by previous valid query"
+        );
+
+        // Continue typing to make it valid again with two conditions
+        app.filter_input = Some(r#"|= "foo" |= "bar""#.to_string());
+        app.update_live_filter();
+        assert!(app.live_filter_query.is_some());
+        assert!(app.live_filter_error.is_none());
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![2]);
+    }
+
+    #[test]
+    fn test_live_filter_no_previous_keeps_none_on_error() {
+        let mut app = App::new(100);
+        // No previous valid query: error with live_filter_query still None
+        app.filter_input = Some("|".to_string());
+        app.update_live_filter();
+        assert!(app.live_filter_query.is_none());
+        assert!(app.live_filter_error.is_some());
     }
 }
