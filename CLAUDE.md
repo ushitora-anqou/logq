@@ -1,6 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## IMPORTANT
+
+- **TDD**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix.
+- **Pre-commit formatting**: Always run `make fmt` before `git commit`.
+- **Update documentation**: When adding or modifying a feature, update README.md and the `--help` output (clap `#[command]`/`#[arg]` attributes in `main.rs`) accordingly.
 
 ## Project Overview
 
@@ -42,12 +46,6 @@ stdin/command → input.rs (tokio spawn) → mpsc channel → main loop (try_rec
 - **Auto-scroll**: Tracks whether the user is at the latest line. `G` re-enables auto-scroll; any manual navigation away from the last line disables it.
 - **Filter query language**: After `/`, users type structured queries like `|= "foo" != "bar"`. Four operators (`|=`, `|~`, `!=`, `!~`) with quoted values, combined with AND semantics. Parsed by `parse_filter_query()`; invalid queries show errors in the status bar with input preserved for editing.
 - **Memory-bounded**: `max_lines` (default 10,000) drops oldest entries via `Vec::remove(0)`.
-
-## Development Workflow
-
-- **TDD**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix.
-- **Pre-commit formatting**: Always run `make fmt` before `git commit`.
-- **Update documentation**: When adding or modifying a feature, update README.md and the `--help` output (clap `#[command]`/`#[arg]` attributes in `main.rs`) accordingly.
 
 ## Testing
 
