@@ -534,6 +534,7 @@ pub struct App {
     filter_draft: Option<String>,
     history_search_active: bool,
     history_search_start: Option<usize>,
+    filtered_indices_cache: Option<Vec<usize>>,
 }
 
 impl App {
@@ -559,6 +560,7 @@ impl App {
             filter_draft: None,
             history_search_active: false,
             history_search_start: None,
+            filtered_indices_cache: None,
         }
     }
 
@@ -595,6 +597,7 @@ impl App {
                 self.selected -= 1;
             }
         }
+        self.filtered_indices_cache = None;
         // auto_scroll: selected/scroll_offset are updated in update_auto_scroll()
     }
 
@@ -684,7 +687,14 @@ impl App {
         }
     }
 
-    fn filtered_indices(&self) -> Vec<usize> {
+    fn filtered_indices(&mut self) -> Vec<usize> {
+        if self.filtered_indices_cache.is_none() {
+            self.filtered_indices_cache = Some(self.compute_filtered_indices());
+        }
+        self.filtered_indices_cache.as_ref().unwrap().clone()
+    }
+
+    fn compute_filtered_indices(&self) -> Vec<usize> {
         match self.active_filter_query() {
             Some(q) if !q.segments.is_empty() => self
                 .lines
@@ -758,10 +768,12 @@ impl App {
                 Ok(query) if !query.segments.is_empty() => {
                     self.live_filter_query = Some(query);
                     self.live_filter_error = None;
+                    self.filtered_indices_cache = None;
                 }
                 Ok(_) => {
                     self.live_filter_query = None;
                     self.live_filter_error = None;
+                    self.filtered_indices_cache = None;
                 }
                 Err(msg) => {
                     // Keep the previous live_filter_query so results stay filtered
@@ -781,6 +793,7 @@ impl App {
                             self.filter_error = None;
                             self.live_filter_query = None;
                             self.live_filter_error = None;
+                            self.filtered_indices_cache = None;
                             if self.filter_history.last() != Some(&input) {
                                 self.filter_history.push(input);
                                 if self.filter_history.len() > 100 {
@@ -793,6 +806,7 @@ impl App {
                             self.filter_error = None;
                             self.live_filter_query = None;
                             self.live_filter_error = None;
+                            self.filtered_indices_cache = None;
                         }
                         Err(msg) => {
                             self.filter_error = Some(msg.clone());
@@ -823,6 +837,7 @@ impl App {
                 self.filter_history_index = None;
                 self.history_search_active = false;
                 self.history_search_start = None;
+                self.filtered_indices_cache = None;
             }
             KeyCode::Backspace => {
                 if let Some(input) = &mut self.filter_input {
@@ -846,6 +861,7 @@ impl App {
                 self.filter_history_index = None;
                 self.history_search_active = false;
                 self.history_search_start = None;
+                self.filtered_indices_cache = None;
             }
             KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.handle_history_search();
@@ -1004,6 +1020,7 @@ impl App {
             }
             (KeyCode::Esc, _) => {
                 self.filter_query = None;
+                self.filtered_indices_cache = None;
             }
             _ => {}
         }
@@ -1489,6 +1506,7 @@ mod tests {
         });
         assert_eq!(app.filtered_indices().len(), 0);
         app.filter_query = None;
+        app.filtered_indices_cache = None;
         assert_eq!(app.filtered_indices().len(), 1);
     }
 
@@ -1688,6 +1706,41 @@ mod tests {
             elapsed.as_millis() < 200,
             "add_line 1000x took {:?}",
             elapsed
+        );
+    }
+
+    #[test]
+    fn test_filtered_indices_cache_avoids_recomputation() {
+        let mut app = App::new(10000);
+        for i in 0..10000 {
+            app.add_line(format!(
+                r#"{{"level":"{}","msg":"line {}"}}"#,
+                if i % 3 == 0 { "error" } else { "info" },
+                i
+            ));
+        }
+        app.filter_query = Some(FilterQuery {
+            segments: vec![json(FilterCondition {
+                operator: FilterOp::JsonEquals,
+                value: FilterValue::String("error".to_string()),
+                regex: None,
+                json_key: Some("level".to_string()),
+            })],
+        });
+
+        // First call: computes and caches (may be slow)
+        let first = app.filtered_indices();
+        assert!(!first.is_empty());
+
+        // Second call: should be served from cache (fast)
+        let start = std::time::Instant::now();
+        let second = app.filtered_indices();
+        let cached_elapsed = start.elapsed();
+        assert_eq!(first, second, "cached result should match");
+        assert!(
+            cached_elapsed.as_micros() < 1000,
+            "cached filtered_indices took {:?}, expected < 1ms",
+            cached_elapsed
         );
     }
 
@@ -1923,6 +1976,7 @@ mod tests {
         {
             let app = App {
                 filter_history: vec!["|= \"foo\"".to_string(), "|= \"bar\"".to_string()],
+                filtered_indices_cache: None,
                 ..App::new(100)
             };
             let content = app.filter_history.join("\n");
