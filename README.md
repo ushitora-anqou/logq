@@ -10,7 +10,7 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **Timestamps**: Each line shows its received time (`HH:MM:SS.mmm`)
 - **JSON syntax highlighting**: Color-coded keys, strings, numbers, booleans, and null values
 - **Pretty-printed detail view**: Press Enter to expand a line into a readable, indented JSON view
-- **Query-based filtering**: Type `/` to enter filter mode with a structured query language supporting literal contains, regex match, and their negations, combinable with AND semantics
+- **Query-based filtering**: Type `/` to enter filter mode with a structured query language supporting literal contains, regex match, and their negations, combinable with AND semantics; JSON key/value conditions support `and`/`or` with parentheses
 - **Breadcrumb bar**: Shows current context (detail view, active filter) at the top of the screen
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
@@ -74,6 +74,28 @@ After pressing `/`, type a query using the following operators. Values must be e
 | `!= "debug"`         | Show lines NOT containing "debug"            |
 | `!~ "err.*"`         | Exclude lines matching the regex             |
 | `|= "error" != "timeout"` | Show lines containing "error" AND not containing "timeout" |
+
+### JSON key/value filters
+
+Filter by JSON fields using `| key op value`. Values can be strings (`"..."`), numbers, booleans (`true`/`false`), or `null`. Supports nested keys with dot notation (`user.name`).
+
+| Query                          | Meaning                                          |
+|--------------------------------|--------------------------------------------------|
+| `| level = "error"`            | JSON where `level` equals `"error"`              |
+| `| count != 0`                 | JSON where `count` is not 0                      |
+| `| msg =~ "err.*"`             | JSON where `msg` matches the regex               |
+| `| active = true`              | JSON where `active` is true                      |
+| `| user.name = "alice"`        | JSON where nested `user.name` equals `"alice"`   |
+
+JSON key conditions support `and`, `or`, and parentheses for grouping:
+
+| Query                          | Meaning                                          |
+|--------------------------------|--------------------------------------------------|
+| `| level = "error" and count > 0` | Both conditions must match                    |
+| `| level = "error" or level = "warn"` | Either condition matches                  |
+| `| (level = "error" or level = "warn") and active = true` | Grouped with parens |
+
+Plain-text conditions (`|=`, `!=`, `|~`, `!~`) cannot use `and`/`or` — they are always ANDed at the top level.
 
 ### Detail view
 

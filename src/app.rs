@@ -56,8 +56,21 @@ pub struct FilterCondition {
 }
 
 #[derive(Debug, Clone)]
+pub enum JsonExpr {
+    Condition(FilterCondition),
+    And(Box<JsonExpr>, Box<JsonExpr>),
+    Or(Box<JsonExpr>, Box<JsonExpr>),
+}
+
+#[derive(Debug, Clone)]
+pub enum FilterSegment {
+    Plain(FilterCondition),
+    Json(JsonExpr),
+}
+
+#[derive(Debug, Clone)]
 pub struct FilterQuery {
-    pub conditions: Vec<FilterCondition>,
+    pub segments: Vec<FilterSegment>,
 }
 
 impl FilterValue {
@@ -79,27 +92,66 @@ impl FilterValue {
 
 impl FilterQuery {
     fn display_string(&self) -> String {
-        self.conditions
+        self.segments
             .iter()
-            .map(|c| {
-                let op = match c.operator {
-                    FilterOp::Contains => "|=",
-                    FilterOp::RegexMatch => "|~",
-                    FilterOp::NotContains => "!=",
-                    FilterOp::NotRegexMatch => "!~",
-                    FilterOp::JsonEquals => "=",
-                    FilterOp::JsonNotEquals => "!=",
-                    FilterOp::JsonRegexMatch => "=~",
-                    FilterOp::JsonNotRegexMatch => "!~",
-                };
-                if let Some(key) = &c.json_key {
-                    format!("| {} {} {}", key, op, c.value.display_string())
-                } else {
+            .map(|seg| match seg {
+                FilterSegment::Plain(c) => {
+                    let op = match c.operator {
+                        FilterOp::Contains => "|=",
+                        FilterOp::RegexMatch => "|~",
+                        FilterOp::NotContains => "!=",
+                        FilterOp::NotRegexMatch => "!~",
+                        _ => unreachable!(),
+                    };
                     format!("{} {}", op, c.value.display_string())
+                }
+                FilterSegment::Json(expr) => {
+                    format!("| {}", expr.display_string_inner(false))
                 }
             })
             .collect::<Vec<_>>()
             .join(" ")
+    }
+}
+
+impl JsonExpr {
+    fn display_string_inner(&self, parent_is_and: bool) -> String {
+        match self {
+            JsonExpr::Condition(c) => {
+                let op = match c.operator {
+                    FilterOp::JsonEquals => "=",
+                    FilterOp::JsonNotEquals => "!=",
+                    FilterOp::JsonRegexMatch => "=~",
+                    FilterOp::JsonNotRegexMatch => "!~",
+                    _ => unreachable!(),
+                };
+                format!(
+                    "{} {} {}",
+                    c.json_key.as_deref().unwrap(),
+                    op,
+                    c.value.display_string()
+                )
+            }
+            JsonExpr::And(l, r) => {
+                format!(
+                    "{} and {}",
+                    l.display_string_inner(true),
+                    r.display_string_inner(true)
+                )
+            }
+            JsonExpr::Or(l, r) => {
+                let inner = format!(
+                    "{} or {}",
+                    l.display_string_inner(false),
+                    r.display_string_inner(false)
+                );
+                if parent_is_and {
+                    format!("({})", inner)
+                } else {
+                    inner
+                }
+            }
+        }
     }
 }
 
@@ -161,29 +213,204 @@ fn json_value_to_string(value: &Value) -> String {
     }
 }
 
+fn skip_whitespace(chars: &[char], pos: &mut usize, len: usize) {
+    while *pos < len && chars[*pos] == ' ' {
+        *pos += 1;
+    }
+}
+
+fn is_keyword(chars: &[char], pos: usize, len: usize, keyword: &str) -> bool {
+    let kw_chars: Vec<char> = keyword.chars().collect();
+    let kw_len = kw_chars.len();
+    if pos + kw_len > len {
+        return false;
+    }
+    if chars[pos..pos + kw_len] != kw_chars[..] {
+        return false;
+    }
+    // Word boundary: followed by space, '(', ')', or end of input
+    if pos + kw_len < len {
+        let next = chars[pos + kw_len];
+        next == ' ' || next == '(' || next == ')'
+    } else {
+        true
+    }
+}
+
+fn parse_json_condition(
+    chars: &[char],
+    pos: &mut usize,
+    len: usize,
+) -> Result<FilterCondition, String> {
+    // Read key name
+    let key_start = *pos;
+    while *pos < len
+        && (chars[*pos].is_alphanumeric()
+            || chars[*pos] == '_'
+            || chars[*pos] == '-'
+            || chars[*pos] == '.')
+    {
+        *pos += 1;
+    }
+    let key: String = chars[key_start..*pos].iter().collect();
+    if key.is_empty() {
+        return Err(format!("Expected key name at position {}", pos));
+    }
+
+    skip_whitespace(chars, pos, len);
+
+    // Read operator: =, !=, =~, !~
+    let (op, needs_regex) = if *pos + 1 < len && chars[*pos] == '!' {
+        if chars[*pos + 1] == '=' {
+            *pos += 2;
+            (FilterOp::JsonNotEquals, false)
+        } else if chars[*pos + 1] == '~' {
+            *pos += 2;
+            (FilterOp::JsonNotRegexMatch, true)
+        } else {
+            return Err(format!("Expected operator = != =~ !~ at position {}", pos));
+        }
+    } else if *pos < len && chars[*pos] == '=' {
+        *pos += 1;
+        if *pos < len && chars[*pos] == '~' {
+            *pos += 1;
+            (FilterOp::JsonRegexMatch, true)
+        } else {
+            (FilterOp::JsonEquals, false)
+        }
+    } else {
+        return Err(format!("Expected operator = != =~ !~ at position {}", pos));
+    };
+
+    skip_whitespace(chars, pos, len);
+
+    // Read value
+    let (value, regex) = if *pos < len && chars[*pos] == '"' {
+        let s = parse_quoted_string(chars, pos, len)?;
+        let r = if needs_regex {
+            Some(regex::Regex::new(&s).map_err(|e| format!("Invalid regex: {}", e))?)
+        } else {
+            None
+        };
+        (FilterValue::String(s), r)
+    } else if *pos + 3 < len && chars[*pos..*pos + 4] == ['t', 'r', 'u', 'e'] {
+        *pos += 4;
+        (FilterValue::Boolean(true), None)
+    } else if *pos + 4 < len && chars[*pos..*pos + 5] == ['f', 'a', 'l', 's', 'e'] {
+        *pos += 5;
+        (FilterValue::Boolean(false), None)
+    } else if *pos + 3 < len && chars[*pos..*pos + 4] == ['n', 'u', 'l', 'l'] {
+        *pos += 4;
+        (FilterValue::Null, None)
+    } else {
+        // Number
+        let num_start = *pos;
+        if *pos < len && (chars[*pos] == '-' || chars[*pos] == '+') {
+            *pos += 1;
+        }
+        let has_digits = {
+            let start = *pos;
+            while *pos < len && chars[*pos].is_ascii_digit() {
+                *pos += 1;
+            }
+            *pos > start
+        };
+        if !has_digits {
+            return Err(format!("Expected value at position {}", num_start));
+        }
+        if *pos < len && chars[*pos] == '.' {
+            *pos += 1;
+            while *pos < len && chars[*pos].is_ascii_digit() {
+                *pos += 1;
+            }
+        }
+        let num_str: String = chars[num_start..*pos].iter().collect();
+        let n: f64 = num_str
+            .parse()
+            .map_err(|_| format!("Invalid number: {}", num_str))?;
+        (FilterValue::Number(n), None)
+    };
+
+    Ok(FilterCondition {
+        operator: op,
+        value,
+        regex,
+        json_key: Some(key),
+    })
+}
+
+fn parse_json_primary(chars: &[char], pos: &mut usize, len: usize) -> Result<JsonExpr, String> {
+    skip_whitespace(chars, pos, len);
+
+    if *pos < len && chars[*pos] == '(' {
+        *pos += 1; // skip '('
+        let expr = parse_json_or_expr(chars, pos, len)?;
+        skip_whitespace(chars, pos, len);
+        if *pos >= len || chars[*pos] != ')' {
+            return Err("Expected ')'".to_string());
+        }
+        *pos += 1; // skip ')'
+        Ok(expr)
+    } else {
+        let cond = parse_json_condition(chars, pos, len)?;
+        Ok(JsonExpr::Condition(cond))
+    }
+}
+
+fn parse_json_and_expr(chars: &[char], pos: &mut usize, len: usize) -> Result<JsonExpr, String> {
+    let mut left = parse_json_primary(chars, pos, len)?;
+
+    loop {
+        skip_whitespace(chars, pos, len);
+        if is_keyword(chars, *pos, len, "and") {
+            *pos += 3; // consume "and"
+            let right = parse_json_primary(chars, pos, len)?;
+            left = JsonExpr::And(Box::new(left), Box::new(right));
+        } else {
+            break;
+        }
+    }
+
+    Ok(left)
+}
+
+fn parse_json_or_expr(chars: &[char], pos: &mut usize, len: usize) -> Result<JsonExpr, String> {
+    let mut left = parse_json_and_expr(chars, pos, len)?;
+
+    loop {
+        skip_whitespace(chars, pos, len);
+        if is_keyword(chars, *pos, len, "or") {
+            *pos += 2; // consume "or"
+            let right = parse_json_and_expr(chars, pos, len)?;
+            left = JsonExpr::Or(Box::new(left), Box::new(right));
+        } else {
+            break;
+        }
+    }
+
+    Ok(left)
+}
+
 fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
     let s = input.trim();
     if s.is_empty() {
-        return Ok(FilterQuery { conditions: vec![] });
+        return Ok(FilterQuery { segments: vec![] });
     }
 
-    let mut conditions = Vec::new();
+    let mut segments: Vec<FilterSegment> = Vec::new();
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len();
     let mut pos = 0;
 
     while pos < len {
-        // Skip whitespace
-        while pos < len && chars[pos] == ' ' {
-            pos += 1;
-        }
+        skip_whitespace(&chars, &mut pos, len);
         if pos >= len {
             break;
         }
 
         if chars[pos] == '|' {
             if pos + 1 < len && (chars[pos + 1] == '=' || chars[pos + 1] == '~') {
-                // Existing whole-line operators: |= or |~
+                // Plain text operators: |= or |~
                 let op: FilterOp = match chars[pos + 1] {
                     '=' => FilterOp::Contains,
                     '~' => FilterOp::RegexMatch,
@@ -191,10 +418,7 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
                 };
                 pos += 2;
 
-                // Skip whitespace
-                while pos < len && chars[pos] == ' ' {
-                    pos += 1;
-                }
+                skip_whitespace(&chars, &mut pos, len);
 
                 let value = parse_quoted_string(&chars, &mut pos, len)?;
                 let regex = match op {
@@ -204,126 +428,22 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
                     _ => None,
                 };
 
-                conditions.push(FilterCondition {
+                segments.push(FilterSegment::Plain(FilterCondition {
                     operator: op,
                     value: FilterValue::String(value),
                     regex,
                     json_key: None,
-                });
+                }));
             } else {
-                // JSON key filter: | key = "value" or | key != "value" etc.
+                // JSON key group: | followed by expression with and/or/parens
                 pos += 1; // skip '|'
+                skip_whitespace(&chars, &mut pos, len);
 
-                // Skip whitespace
-                while pos < len && chars[pos] == ' ' {
-                    pos += 1;
-                }
-
-                // Read key name
-                let key_start = pos;
-                while pos < len
-                    && (chars[pos].is_alphanumeric()
-                        || chars[pos] == '_'
-                        || chars[pos] == '-'
-                        || chars[pos] == '.')
-                {
-                    pos += 1;
-                }
-                let key: String = chars[key_start..pos].iter().collect();
-                if key.is_empty() {
-                    return Err(format!("Expected key name at position {}", pos));
-                }
-
-                // Skip whitespace
-                while pos < len && chars[pos] == ' ' {
-                    pos += 1;
-                }
-
-                // Read operator: =, !=, =~, !~
-                let (op, needs_regex) = if pos + 1 < len && chars[pos] == '!' {
-                    if chars[pos + 1] == '=' {
-                        pos += 2;
-                        (FilterOp::JsonNotEquals, false)
-                    } else if chars[pos + 1] == '~' {
-                        pos += 2;
-                        (FilterOp::JsonNotRegexMatch, true)
-                    } else {
-                        return Err(format!("Expected operator = != =~ !~ at position {}", pos));
-                    }
-                } else if pos < len && chars[pos] == '=' {
-                    pos += 1;
-                    if pos < len && chars[pos] == '~' {
-                        pos += 1;
-                        (FilterOp::JsonRegexMatch, true)
-                    } else {
-                        (FilterOp::JsonEquals, false)
-                    }
-                } else {
-                    return Err(format!("Expected operator = != =~ !~ at position {}", pos));
-                };
-
-                // Skip whitespace
-                while pos < len && chars[pos] == ' ' {
-                    pos += 1;
-                }
-
-                // Read value
-                let (value, regex) = if pos < len && chars[pos] == '"' {
-                    // Quoted string
-                    let s = parse_quoted_string(&chars, &mut pos, len)?;
-                    let r = if needs_regex {
-                        Some(regex::Regex::new(&s).map_err(|e| format!("Invalid regex: {}", e))?)
-                    } else {
-                        None
-                    };
-                    (FilterValue::String(s), r)
-                } else if pos + 3 < len && chars[pos..pos + 4] == ['t', 'r', 'u', 'e'] {
-                    pos += 4;
-                    (FilterValue::Boolean(true), None)
-                } else if pos + 4 < len && chars[pos..pos + 5] == ['f', 'a', 'l', 's', 'e'] {
-                    pos += 5;
-                    (FilterValue::Boolean(false), None)
-                } else if pos + 3 < len && chars[pos..pos + 4] == ['n', 'u', 'l', 'l'] {
-                    pos += 4;
-                    (FilterValue::Null, None)
-                } else {
-                    // Number
-                    let num_start = pos;
-                    if pos < len && (chars[pos] == '-' || chars[pos] == '+') {
-                        pos += 1;
-                    }
-                    let has_digits = {
-                        let start = pos;
-                        while pos < len && (chars[pos].is_ascii_digit()) {
-                            pos += 1;
-                        }
-                        pos > start
-                    };
-                    if !has_digits {
-                        return Err(format!("Expected value at position {}", num_start));
-                    }
-                    if pos < len && chars[pos] == '.' {
-                        pos += 1;
-                        while pos < len && chars[pos].is_ascii_digit() {
-                            pos += 1;
-                        }
-                    }
-                    let num_str: String = chars[num_start..pos].iter().collect();
-                    let n: f64 = num_str
-                        .parse()
-                        .map_err(|_| format!("Invalid number: {}", num_str))?;
-                    (FilterValue::Number(n), None)
-                };
-
-                conditions.push(FilterCondition {
-                    operator: op,
-                    value,
-                    regex,
-                    json_key: Some(key),
-                });
+                let expr = parse_json_or_expr(&chars, &mut pos, len)?;
+                segments.push(FilterSegment::Json(expr));
             }
         } else if chars[pos] == '!' {
-            // Existing whole-line operators: != or !~
+            // Plain text operators: != or !~
             if pos + 1 >= len {
                 return Err(format!("Expected operator at position {}", pos));
             }
@@ -334,10 +454,7 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
             };
             pos += 2;
 
-            // Skip whitespace
-            while pos < len && chars[pos] == ' ' {
-                pos += 1;
-            }
+            skip_whitespace(&chars, &mut pos, len);
 
             let value = parse_quoted_string(&chars, &mut pos, len)?;
             let regex = match op {
@@ -347,12 +464,12 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
                 _ => None,
             };
 
-            conditions.push(FilterCondition {
+            segments.push(FilterSegment::Plain(FilterCondition {
                 operator: op,
                 value: FilterValue::String(value),
                 regex,
                 json_key: None,
-            });
+            }));
         } else {
             return Err(format!(
                 "Expected operator |= |~ != !~ or | key at position {}",
@@ -361,7 +478,7 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
         }
     }
 
-    Ok(FilterQuery { conditions })
+    Ok(FilterQuery { segments })
 }
 
 fn parse_quoted_string(chars: &[char], pos: &mut usize, len: usize) -> Result<String, String> {
@@ -504,23 +621,39 @@ impl App {
 
     fn line_matches_filter(&self, text: &str) -> bool {
         match self.active_filter_query() {
-            Some(query) => query.conditions.iter().all(|c| match c.operator {
-                FilterOp::Contains => match &c.value {
-                    FilterValue::String(s) => text.contains(s.as_str()),
-                    _ => false,
-                },
-                FilterOp::NotContains => match &c.value {
-                    FilterValue::String(s) => !text.contains(s.as_str()),
-                    _ => false,
-                },
-                FilterOp::RegexMatch => c.regex.as_ref().unwrap().is_match(text),
-                FilterOp::NotRegexMatch => !c.regex.as_ref().unwrap().is_match(text),
-                FilterOp::JsonEquals
-                | FilterOp::JsonNotEquals
-                | FilterOp::JsonRegexMatch
-                | FilterOp::JsonNotRegexMatch => self.json_value_matches(text, c),
+            Some(query) => query.segments.iter().all(|seg| match seg {
+                FilterSegment::Plain(c) => self.plain_condition_matches(text, c),
+                FilterSegment::Json(expr) => self.json_expr_matches(text, expr),
             }),
             None => true,
+        }
+    }
+
+    fn plain_condition_matches(&self, text: &str, c: &FilterCondition) -> bool {
+        match c.operator {
+            FilterOp::Contains => match &c.value {
+                FilterValue::String(s) => text.contains(s.as_str()),
+                _ => false,
+            },
+            FilterOp::NotContains => match &c.value {
+                FilterValue::String(s) => !text.contains(s.as_str()),
+                _ => false,
+            },
+            FilterOp::RegexMatch => c.regex.as_ref().unwrap().is_match(text),
+            FilterOp::NotRegexMatch => !c.regex.as_ref().unwrap().is_match(text),
+            _ => false,
+        }
+    }
+
+    fn json_expr_matches(&self, text: &str, expr: &JsonExpr) -> bool {
+        match expr {
+            JsonExpr::Condition(c) => self.json_value_matches(text, c),
+            JsonExpr::And(l, r) => {
+                self.json_expr_matches(text, l) && self.json_expr_matches(text, r)
+            }
+            JsonExpr::Or(l, r) => {
+                self.json_expr_matches(text, l) || self.json_expr_matches(text, r)
+            }
         }
     }
 
@@ -553,7 +686,7 @@ impl App {
 
     fn filtered_indices(&self) -> Vec<usize> {
         match self.active_filter_query() {
-            Some(q) if !q.conditions.is_empty() => self
+            Some(q) if !q.segments.is_empty() => self
                 .lines
                 .iter()
                 .enumerate()
@@ -622,7 +755,7 @@ impl App {
     fn update_live_filter(&mut self) {
         if let Some(input) = &self.filter_input {
             match parse_filter_query(input) {
-                Ok(query) if !query.conditions.is_empty() => {
+                Ok(query) if !query.segments.is_empty() => {
                     self.live_filter_query = Some(query);
                     self.live_filter_error = None;
                 }
@@ -643,7 +776,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(input) = self.filter_input.take() {
                     match parse_filter_query(&input) {
-                        Ok(query) if !query.conditions.is_empty() => {
+                        Ok(query) if !query.segments.is_empty() => {
                             self.filter_query = Some(query);
                             self.filter_error = None;
                             self.live_filter_query = None;
@@ -1130,7 +1263,7 @@ impl App {
     fn render_help_line2(&self, frame: &mut Frame, area: Rect) {
         let text = match self.view_mode {
             ViewMode::List if self.filter_input.is_some() => {
-                " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~  | key = !="
+                " Bksp delete/cancel  syntax: |= \"text\"  |~ /regex/  != !~  | key = !=  and/or ()"
             }
             ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-x quit",
         };
@@ -1239,6 +1372,28 @@ fn highlight_display_line(
 mod tests {
     use super::*;
 
+    fn plain(condition: FilterCondition) -> FilterSegment {
+        FilterSegment::Plain(condition)
+    }
+
+    fn json(condition: FilterCondition) -> FilterSegment {
+        FilterSegment::Json(JsonExpr::Condition(condition))
+    }
+
+    fn get_plain(query: &FilterQuery, idx: usize) -> &FilterCondition {
+        match &query.segments[idx] {
+            FilterSegment::Plain(c) => c,
+            _ => panic!("Expected Plain segment at index {}", idx),
+        }
+    }
+
+    fn get_json(query: &FilterQuery, idx: usize) -> &FilterCondition {
+        match &query.segments[idx] {
+            FilterSegment::Json(JsonExpr::Condition(c)) => c,
+            _ => panic!("Expected Json Condition segment at index {}", idx),
+        }
+    }
+
     #[test]
     fn test_add_line() {
         let mut app = App::new(100);
@@ -1299,12 +1454,12 @@ mod tests {
         app.add_line("plain text line".to_string());
         app.add_line("{\"name\":\"bob\"}".to_string());
         app.filter_query = Some(FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("alice".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         });
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0]);
@@ -1316,12 +1471,12 @@ mod tests {
         app.add_line("hello".to_string());
         app.add_line("world".to_string());
         app.filter_query = Some(FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("xyz".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         });
         let filtered = app.filtered_indices();
         assert!(filtered.is_empty());
@@ -1332,12 +1487,12 @@ mod tests {
         let mut app = App::new(100);
         app.add_line("hello".to_string());
         app.filter_query = Some(FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("xyz".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         });
         assert_eq!(app.filtered_indices().len(), 0);
         app.filter_query = None;
@@ -1351,12 +1506,12 @@ mod tests {
         app.add_line("info: request ok".to_string());
         app.add_line("error: disk full".to_string());
         app.filter_query = Some(FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::RegexMatch,
                 value: FilterValue::String("err.*timeout".to_string()),
                 regex: regex::Regex::new("err.*timeout").ok(),
                 json_key: None,
-            }],
+            })],
         });
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0]);
@@ -1390,12 +1545,12 @@ mod tests {
         app.add_line("bbb".to_string());
         app.add_line("aaa2".to_string());
         app.filter_query = Some(FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("aaa".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         });
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0, 2]);
@@ -1517,12 +1672,12 @@ mod tests {
         app.add_line("bbb2".to_string());
         app.add_line("aaa3".to_string());
         app.filter_query = Some(FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("aaa".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         });
         app.update_auto_scroll(10);
         assert_eq!(app.selected, 4);
@@ -1548,10 +1703,10 @@ mod tests {
     #[test]
     fn test_parse_contains() {
         let query = parse_filter_query(r#"|= "foo""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::Contains);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
         assert_eq!(
-            query.conditions[0].value,
+            get_plain(&query, 0).value,
             FilterValue::String("foo".to_string())
         );
     }
@@ -1559,22 +1714,22 @@ mod tests {
     #[test]
     fn test_parse_regex_match() {
         let query = parse_filter_query(r#"|~ "err.*""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::RegexMatch);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::RegexMatch);
         assert_eq!(
-            query.conditions[0].value,
+            get_plain(&query, 0).value,
             FilterValue::String("err.*".to_string())
         );
-        assert!(query.conditions[0].regex.is_some());
+        assert!(get_plain(&query, 0).regex.is_some());
     }
 
     #[test]
     fn test_parse_not_contains() {
         let query = parse_filter_query(r#"!= "bar""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::NotContains);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::NotContains);
         assert_eq!(
-            query.conditions[0].value,
+            get_plain(&query, 0).value,
             FilterValue::String("bar".to_string())
         );
     }
@@ -1582,27 +1737,27 @@ mod tests {
     #[test]
     fn test_parse_not_regex_match() {
         let query = parse_filter_query(r#"!~ "baz""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::NotRegexMatch);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::NotRegexMatch);
         assert_eq!(
-            query.conditions[0].value,
+            get_plain(&query, 0).value,
             FilterValue::String("baz".to_string())
         );
-        assert!(query.conditions[0].regex.is_some());
+        assert!(get_plain(&query, 0).regex.is_some());
     }
 
     #[test]
     fn test_parse_multiple_conditions() {
         let query = parse_filter_query(r#"|= "foo" != "bar""#).unwrap();
-        assert_eq!(query.conditions.len(), 2);
-        assert_eq!(query.conditions[0].operator, FilterOp::Contains);
+        assert_eq!(query.segments.len(), 2);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
         assert_eq!(
-            query.conditions[0].value,
+            get_plain(&query, 0).value,
             FilterValue::String("foo".to_string())
         );
-        assert_eq!(query.conditions[1].operator, FilterOp::NotContains);
+        assert_eq!(get_plain(&query, 1).operator, FilterOp::NotContains);
         assert_eq!(
-            query.conditions[1].value,
+            get_plain(&query, 1).value,
             FilterValue::String("bar".to_string())
         );
     }
@@ -1610,13 +1765,13 @@ mod tests {
     #[test]
     fn test_parse_empty_input() {
         let query = parse_filter_query("").unwrap();
-        assert!(query.conditions.is_empty());
+        assert!(query.segments.is_empty());
     }
 
     #[test]
     fn test_parse_whitespace_only() {
         let query = parse_filter_query("   ").unwrap();
-        assert!(query.conditions.is_empty());
+        assert!(query.segments.is_empty());
     }
 
     #[test]
@@ -1647,12 +1802,12 @@ mod tests {
     #[test]
     fn test_query_matches_contains() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("foo".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1665,12 +1820,12 @@ mod tests {
     #[test]
     fn test_query_matches_not_contains() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::NotContains,
                 value: FilterValue::String("foo".to_string()),
                 regex: None,
                 json_key: None,
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1683,12 +1838,12 @@ mod tests {
     #[test]
     fn test_query_matches_regex() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::RegexMatch,
                 value: FilterValue::String("err.*".to_string()),
                 regex: regex::Regex::new("err.*").ok(),
                 json_key: None,
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1701,12 +1856,12 @@ mod tests {
     #[test]
     fn test_query_matches_not_regex() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![plain(FilterCondition {
                 operator: FilterOp::NotRegexMatch,
                 value: FilterValue::String("err.*".to_string()),
                 regex: regex::Regex::new("err.*").ok(),
                 json_key: None,
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1719,19 +1874,19 @@ mod tests {
     #[test]
     fn test_query_matches_and_semantics() {
         let query = FilterQuery {
-            conditions: vec![
-                FilterCondition {
+            segments: vec![
+                plain(FilterCondition {
                     operator: FilterOp::Contains,
                     value: FilterValue::String("error".to_string()),
                     regex: None,
                     json_key: None,
-                },
-                FilterCondition {
+                }),
+                plain(FilterCondition {
                     operator: FilterOp::NotContains,
                     value: FilterValue::String("timeout".to_string()),
                     regex: None,
                     json_key: None,
-                },
+                }),
             ],
         };
         let app = App {
@@ -1746,19 +1901,19 @@ mod tests {
     #[test]
     fn test_filter_query_display_string() {
         let query = FilterQuery {
-            conditions: vec![
-                FilterCondition {
+            segments: vec![
+                plain(FilterCondition {
                     operator: FilterOp::Contains,
                     value: FilterValue::String("foo".to_string()),
                     regex: None,
                     json_key: None,
-                },
-                FilterCondition {
+                }),
+                plain(FilterCondition {
                     operator: FilterOp::NotContains,
                     value: FilterValue::String("bar".to_string()),
                     regex: None,
                     json_key: None,
-                },
+                }),
             ],
         };
         assert_eq!(query.display_string(), r#"|= "foo" != "bar""#);
@@ -1794,122 +1949,122 @@ mod tests {
     #[test]
     fn test_parse_json_key_equals_string() {
         let query = parse_filter_query(r#"| name = "alice""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::JsonEquals);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).operator, FilterOp::JsonEquals);
         assert_eq!(
-            query.conditions[0].value,
+            get_json(&query, 0).value,
             FilterValue::String("alice".to_string())
         );
-        assert_eq!(query.conditions[0].json_key, Some("name".to_string()));
-        assert!(query.conditions[0].regex.is_none());
+        assert_eq!(get_json(&query, 0).json_key, Some("name".to_string()));
+        assert!(get_json(&query, 0).regex.is_none());
     }
 
     #[test]
     fn test_parse_json_key_not_equals() {
         let query = parse_filter_query(r#"| name != "bob""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::JsonNotEquals);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).operator, FilterOp::JsonNotEquals);
         assert_eq!(
-            query.conditions[0].value,
+            get_json(&query, 0).value,
             FilterValue::String("bob".to_string())
         );
-        assert_eq!(query.conditions[0].json_key, Some("name".to_string()));
+        assert_eq!(get_json(&query, 0).json_key, Some("name".to_string()));
     }
 
     #[test]
     fn test_parse_json_key_regex_match() {
         let query = parse_filter_query(r#"| msg =~ "err.*""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::JsonRegexMatch);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).operator, FilterOp::JsonRegexMatch);
         assert_eq!(
-            query.conditions[0].value,
+            get_json(&query, 0).value,
             FilterValue::String("err.*".to_string())
         );
-        assert_eq!(query.conditions[0].json_key, Some("msg".to_string()));
-        assert!(query.conditions[0].regex.is_some());
+        assert_eq!(get_json(&query, 0).json_key, Some("msg".to_string()));
+        assert!(get_json(&query, 0).regex.is_some());
     }
 
     #[test]
     fn test_parse_json_key_not_regex_match() {
         let query = parse_filter_query(r#"| msg !~ "err.*""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::JsonNotRegexMatch);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).operator, FilterOp::JsonNotRegexMatch);
         assert_eq!(
-            query.conditions[0].value,
+            get_json(&query, 0).value,
             FilterValue::String("err.*".to_string())
         );
-        assert_eq!(query.conditions[0].json_key, Some("msg".to_string()));
-        assert!(query.conditions[0].regex.is_some());
+        assert_eq!(get_json(&query, 0).json_key, Some("msg".to_string()));
+        assert!(get_json(&query, 0).regex.is_some());
     }
 
     #[test]
     fn test_parse_json_key_number() {
         let query = parse_filter_query(r#"| count = 42"#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].operator, FilterOp::JsonEquals);
-        assert_eq!(query.conditions[0].value, FilterValue::Number(42.0));
-        assert_eq!(query.conditions[0].json_key, Some("count".to_string()));
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).operator, FilterOp::JsonEquals);
+        assert_eq!(get_json(&query, 0).value, FilterValue::Number(42.0));
+        assert_eq!(get_json(&query, 0).json_key, Some("count".to_string()));
     }
 
     #[test]
     fn test_parse_json_key_negative_number() {
         let query = parse_filter_query(r#"| temp = -3"#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].value, FilterValue::Number(-3.0));
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).value, FilterValue::Number(-3.0));
     }
 
     #[test]
     fn test_parse_json_key_float() {
         let query = parse_filter_query(r#"| ratio = 2.5"#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].value, FilterValue::Number(2.5));
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).value, FilterValue::Number(2.5));
     }
 
     #[test]
     fn test_parse_json_key_boolean_true() {
         let query = parse_filter_query(r#"| active = true"#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].value, FilterValue::Boolean(true));
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).value, FilterValue::Boolean(true));
     }
 
     #[test]
     fn test_parse_json_key_boolean_false() {
         let query = parse_filter_query(r#"| active = false"#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].value, FilterValue::Boolean(false));
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).value, FilterValue::Boolean(false));
     }
 
     #[test]
     fn test_parse_json_key_null() {
         let query = parse_filter_query(r#"| result = null"#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].value, FilterValue::Null);
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).value, FilterValue::Null);
     }
 
     #[test]
     fn test_parse_json_nested_key() {
         let query = parse_filter_query(r#"| user.name = "alice""#).unwrap();
-        assert_eq!(query.conditions.len(), 1);
-        assert_eq!(query.conditions[0].json_key, Some("user.name".to_string()));
+        assert_eq!(query.segments.len(), 1);
+        assert_eq!(get_json(&query, 0).json_key, Some("user.name".to_string()));
     }
 
     #[test]
     fn test_parse_mixed_filters() {
         let query = parse_filter_query(r#"|= "foo" | key1 = "value1" != "bar""#).unwrap();
-        assert_eq!(query.conditions.len(), 3);
-        assert_eq!(query.conditions[0].operator, FilterOp::Contains);
-        assert_eq!(query.conditions[0].json_key, None);
-        assert_eq!(query.conditions[1].operator, FilterOp::JsonEquals);
-        assert_eq!(query.conditions[1].json_key, Some("key1".to_string()));
-        assert_eq!(query.conditions[2].operator, FilterOp::NotContains);
-        assert_eq!(query.conditions[2].json_key, None);
+        assert_eq!(query.segments.len(), 3);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
+        assert_eq!(get_plain(&query, 0).json_key, None);
+        assert_eq!(get_json(&query, 1).operator, FilterOp::JsonEquals);
+        assert_eq!(get_json(&query, 1).json_key, Some("key1".to_string()));
+        assert_eq!(get_plain(&query, 2).operator, FilterOp::NotContains);
+        assert_eq!(get_plain(&query, 2).json_key, None);
     }
 
     #[test]
     fn test_parse_json_key_with_underscore_and_hyphen() {
         let query = parse_filter_query(r#"| my_key-name = "value""#).unwrap();
         assert_eq!(
-            query.conditions[0].json_key,
+            get_json(&query, 0).json_key,
             Some("my_key-name".to_string())
         );
     }
@@ -1929,12 +2084,12 @@ mod tests {
     #[test]
     fn test_json_key_equals_string_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::String("alice".to_string()),
                 regex: None,
                 json_key: Some("name".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1946,12 +2101,12 @@ mod tests {
     #[test]
     fn test_json_key_equals_string_no_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::String("bob".to_string()),
                 regex: None,
                 json_key: Some("name".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1963,12 +2118,12 @@ mod tests {
     #[test]
     fn test_json_key_not_equals() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonNotEquals,
                 value: FilterValue::String("bob".to_string()),
                 regex: None,
                 json_key: Some("name".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1981,12 +2136,12 @@ mod tests {
     #[test]
     fn test_json_key_number_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::Number(30.0),
                 regex: None,
                 json_key: Some("age".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -1999,12 +2154,12 @@ mod tests {
     #[test]
     fn test_json_key_boolean_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::Boolean(true),
                 regex: None,
                 json_key: Some("active".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2018,12 +2173,12 @@ mod tests {
     #[test]
     fn test_json_key_null_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::Null,
                 regex: None,
                 json_key: Some("result".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2036,12 +2191,12 @@ mod tests {
     #[test]
     fn test_json_key_nested_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::String("alice".to_string()),
                 regex: None,
                 json_key: Some("user.name".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2054,12 +2209,12 @@ mod tests {
     #[test]
     fn test_json_key_missing_key_equals() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::String("alice".to_string()),
                 regex: None,
                 json_key: Some("missing".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2071,12 +2226,12 @@ mod tests {
     #[test]
     fn test_json_key_missing_key_not_equals() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonNotEquals,
                 value: FilterValue::String("bob".to_string()),
                 regex: None,
                 json_key: Some("missing".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2089,12 +2244,12 @@ mod tests {
     #[test]
     fn test_json_key_non_json_line() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::String("alice".to_string()),
                 regex: None,
                 json_key: Some("name".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2106,12 +2261,12 @@ mod tests {
     #[test]
     fn test_json_key_regex_match() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonRegexMatch,
                 value: FilterValue::String("err.*".to_string()),
                 regex: regex::Regex::new("err.*").ok(),
                 json_key: Some("msg".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2124,12 +2279,12 @@ mod tests {
     #[test]
     fn test_json_key_regex_on_number() {
         let query = FilterQuery {
-            conditions: vec![FilterCondition {
+            segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonRegexMatch,
                 value: FilterValue::String("4.*".to_string()),
                 regex: regex::Regex::new("4.*").ok(),
                 json_key: Some("count".to_string()),
-            }],
+            })],
         };
         let app = App {
             filter_query: Some(query),
@@ -2142,19 +2297,19 @@ mod tests {
     #[test]
     fn test_mixed_filter_and_json_key() {
         let query = FilterQuery {
-            conditions: vec![
-                FilterCondition {
+            segments: vec![
+                plain(FilterCondition {
                     operator: FilterOp::Contains,
                     value: FilterValue::String("error".to_string()),
                     regex: None,
                     json_key: None,
-                },
-                FilterCondition {
+                }),
+                json(FilterCondition {
                     operator: FilterOp::JsonEquals,
                     value: FilterValue::String("timeout".to_string()),
                     regex: None,
                     json_key: Some("type".to_string()),
-                },
+                }),
             ],
         };
         let app = App {
@@ -2169,19 +2324,19 @@ mod tests {
     #[test]
     fn test_json_key_display_string() {
         let query = FilterQuery {
-            conditions: vec![
-                FilterCondition {
+            segments: vec![
+                json(FilterCondition {
                     operator: FilterOp::JsonEquals,
                     value: FilterValue::String("alice".to_string()),
                     regex: None,
                     json_key: Some("name".to_string()),
-                },
-                FilterCondition {
+                }),
+                json(FilterCondition {
                     operator: FilterOp::JsonNotEquals,
                     value: FilterValue::Number(42.0),
                     regex: None,
                     json_key: Some("age".to_string()),
-                },
+                }),
             ],
         };
         assert_eq!(query.display_string(), r#"| name = "alice" | age != 42"#);
@@ -2190,19 +2345,19 @@ mod tests {
     #[test]
     fn test_json_key_display_boolean_and_null() {
         let query = FilterQuery {
-            conditions: vec![
-                FilterCondition {
+            segments: vec![
+                json(FilterCondition {
                     operator: FilterOp::JsonEquals,
                     value: FilterValue::Boolean(true),
                     regex: None,
                     json_key: Some("active".to_string()),
-                },
-                FilterCondition {
+                }),
+                json(FilterCondition {
                     operator: FilterOp::JsonEquals,
                     value: FilterValue::Null,
                     regex: None,
                     json_key: Some("result".to_string()),
-                },
+                }),
             ],
         };
         assert_eq!(query.display_string(), "| active = true | result = null");
@@ -2255,5 +2410,312 @@ mod tests {
         app.update_live_filter();
         assert!(app.live_filter_query.is_none());
         assert!(app.live_filter_error.is_some());
+    }
+
+    // and/or/parens parser tests
+
+    #[test]
+    fn test_parse_json_and() {
+        let query = parse_filter_query(r#"| key1 = "foo" and key2 = "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 1);
+        match &query.segments[0] {
+            FilterSegment::Json(JsonExpr::And(l, r)) => match (l.as_ref(), r.as_ref()) {
+                (JsonExpr::Condition(a), JsonExpr::Condition(b)) => {
+                    assert_eq!(a.json_key, Some("key1".to_string()));
+                    assert_eq!(b.json_key, Some("key2".to_string()));
+                }
+                _ => panic!("Expected Condition children"),
+            },
+            _ => panic!("Expected Json And segment"),
+        }
+    }
+
+    #[test]
+    fn test_parse_json_or() {
+        let query = parse_filter_query(r#"| key1 = "foo" or key2 = "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 1);
+        match &query.segments[0] {
+            FilterSegment::Json(JsonExpr::Or(l, r)) => match (l.as_ref(), r.as_ref()) {
+                (JsonExpr::Condition(a), JsonExpr::Condition(b)) => {
+                    assert_eq!(a.json_key, Some("key1".to_string()));
+                    assert_eq!(b.json_key, Some("key2".to_string()));
+                }
+                _ => panic!("Expected Condition children"),
+            },
+            _ => panic!("Expected Json Or segment"),
+        }
+    }
+
+    #[test]
+    fn test_parse_json_parens_or_and() {
+        let query =
+            parse_filter_query(r#"| (key1 = "foo" or key2 = "bar") and key3 = "baz""#).unwrap();
+        assert_eq!(query.segments.len(), 1);
+        match &query.segments[0] {
+            FilterSegment::Json(JsonExpr::And(l, r)) => match (l.as_ref(), r.as_ref()) {
+                (JsonExpr::Or(ll, lr), JsonExpr::Condition(c)) => {
+                    match (ll.as_ref(), lr.as_ref()) {
+                        (JsonExpr::Condition(a), JsonExpr::Condition(b)) => {
+                            assert_eq!(a.json_key, Some("key1".to_string()));
+                            assert_eq!(b.json_key, Some("key2".to_string()));
+                        }
+                        _ => panic!("Expected Condition children in Or"),
+                    }
+                    assert_eq!(c.json_key, Some("key3".to_string()));
+                }
+                _ => panic!("Expected Or and Condition children"),
+            },
+            _ => panic!("Expected Json And segment"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plain_json_and_plain() {
+        let query = parse_filter_query(r#"|= "foo" | k1 = "bar" and k2 = 10 |= "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 3);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
+        assert_eq!(get_plain(&query, 2).operator, FilterOp::Contains);
+        match &query.segments[1] {
+            FilterSegment::Json(JsonExpr::And(l, r)) => match (l.as_ref(), r.as_ref()) {
+                (JsonExpr::Condition(a), JsonExpr::Condition(b)) => {
+                    assert_eq!(a.json_key, Some("k1".to_string()));
+                    assert_eq!(b.json_key, Some("k2".to_string()));
+                    assert_eq!(b.value, FilterValue::Number(10.0));
+                }
+                _ => panic!("Expected Condition children"),
+            },
+            _ => panic!("Expected Json And segment at index 1"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plain_json_or_plain() {
+        let query = parse_filter_query(r#"|= "foo" | k1 = "bar" or k2 = 10 != "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 3);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
+        assert_eq!(get_plain(&query, 2).operator, FilterOp::NotContains);
+        match &query.segments[1] {
+            FilterSegment::Json(JsonExpr::Or(_, _)) => {}
+            _ => panic!("Expected Json Or segment at index 1"),
+        }
+    }
+
+    #[test]
+    fn test_parse_json_grouped_or_and_plain_json() {
+        let query =
+            parse_filter_query(r#"|= "foo" | (k1 = "bar" or k2 = 10) != "bar" | k3 = true"#)
+                .unwrap();
+        assert_eq!(query.segments.len(), 4);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
+        assert_eq!(get_plain(&query, 2).operator, FilterOp::NotContains);
+        match &query.segments[1] {
+            FilterSegment::Json(JsonExpr::Or(_, _)) => {}
+            _ => panic!("Expected Json Or segment at index 1"),
+        }
+        match &query.segments[3] {
+            FilterSegment::Json(JsonExpr::Condition(c)) => {
+                assert_eq!(c.json_key, Some("k3".to_string()));
+                assert_eq!(c.value, FilterValue::Boolean(true));
+            }
+            _ => panic!("Expected Json Condition at index 3"),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_plain_and_plain() {
+        assert!(parse_filter_query(r#"|= "foo" and |= "bar""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_plain_and_not() {
+        assert!(parse_filter_query(r#"|= "foo" and != "bar""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_plain_or_not() {
+        assert!(parse_filter_query(r#"|= "foo" or != "bar""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_regex_or_not_regex() {
+        assert!(parse_filter_query(r#"|~ "foo" or !~ "bar""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_json_and_plain() {
+        assert!(parse_filter_query(r#"|= "foo" | k1 = "bar" and |= "bar""#).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_unmatched_paren() {
+        assert!(parse_filter_query(r#"| (k1 = "foo""#).is_err());
+    }
+
+    // and/or evaluation tests
+
+    #[test]
+    fn test_json_and_matches_both() {
+        let query = FilterQuery {
+            segments: vec![FilterSegment::Json(JsonExpr::And(
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("foo".to_string()),
+                    regex: None,
+                    json_key: Some("k1".to_string()),
+                })),
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("bar".to_string()),
+                    regex: None,
+                    json_key: Some("k2".to_string()),
+                })),
+            ))],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"k1":"foo","k2":"bar"}"#));
+        assert!(!app.line_matches_filter(r#"{"k1":"foo","k2":"baz"}"#));
+        assert!(!app.line_matches_filter(r#"{"k1":"other","k2":"bar"}"#));
+    }
+
+    #[test]
+    fn test_json_or_matches_either() {
+        let query = FilterQuery {
+            segments: vec![FilterSegment::Json(JsonExpr::Or(
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("foo".to_string()),
+                    regex: None,
+                    json_key: Some("k1".to_string()),
+                })),
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("bar".to_string()),
+                    regex: None,
+                    json_key: Some("k2".to_string()),
+                })),
+            ))],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"k1":"foo","k2":"baz"}"#));
+        assert!(app.line_matches_filter(r#"{"k1":"other","k2":"bar"}"#));
+        assert!(!app.line_matches_filter(r#"{"k1":"other","k2":"baz"}"#));
+    }
+
+    #[test]
+    fn test_json_or_in_parens_with_and() {
+        let query = FilterQuery {
+            segments: vec![FilterSegment::Json(JsonExpr::And(
+                Box::new(JsonExpr::Or(
+                    Box::new(JsonExpr::Condition(FilterCondition {
+                        operator: FilterOp::JsonEquals,
+                        value: FilterValue::String("timeout".to_string()),
+                        regex: None,
+                        json_key: Some("type".to_string()),
+                    })),
+                    Box::new(JsonExpr::Condition(FilterCondition {
+                        operator: FilterOp::JsonEquals,
+                        value: FilterValue::String("disk".to_string()),
+                        regex: None,
+                        json_key: Some("type".to_string()),
+                    })),
+                )),
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::Boolean(true),
+                    regex: None,
+                    json_key: Some("critical".to_string()),
+                })),
+            ))],
+        };
+        let app = App {
+            filter_query: Some(query),
+            ..App::new(100)
+        };
+        assert!(app.line_matches_filter(r#"{"type":"timeout","critical":true}"#));
+        assert!(app.line_matches_filter(r#"{"type":"disk","critical":true}"#));
+        assert!(!app.line_matches_filter(r#"{"type":"timeout","critical":false}"#));
+        assert!(!app.line_matches_filter(r#"{"type":"network","critical":true}"#));
+    }
+
+    // and/or display tests
+
+    #[test]
+    fn test_json_and_display_string() {
+        let query = FilterQuery {
+            segments: vec![FilterSegment::Json(JsonExpr::And(
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("foo".to_string()),
+                    regex: None,
+                    json_key: Some("k1".to_string()),
+                })),
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::Number(42.0),
+                    regex: None,
+                    json_key: Some("k2".to_string()),
+                })),
+            ))],
+        };
+        assert_eq!(query.display_string(), r#"| k1 = "foo" and k2 = 42"#);
+    }
+
+    #[test]
+    fn test_json_or_display_string() {
+        let query = FilterQuery {
+            segments: vec![FilterSegment::Json(JsonExpr::Or(
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("foo".to_string()),
+                    regex: None,
+                    json_key: Some("k1".to_string()),
+                })),
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::String("bar".to_string()),
+                    regex: None,
+                    json_key: Some("k2".to_string()),
+                })),
+            ))],
+        };
+        assert_eq!(query.display_string(), r#"| k1 = "foo" or k2 = "bar""#);
+    }
+
+    #[test]
+    fn test_json_or_in_and_display_string() {
+        let query = FilterQuery {
+            segments: vec![FilterSegment::Json(JsonExpr::And(
+                Box::new(JsonExpr::Or(
+                    Box::new(JsonExpr::Condition(FilterCondition {
+                        operator: FilterOp::JsonEquals,
+                        value: FilterValue::String("foo".to_string()),
+                        regex: None,
+                        json_key: Some("k1".to_string()),
+                    })),
+                    Box::new(JsonExpr::Condition(FilterCondition {
+                        operator: FilterOp::JsonEquals,
+                        value: FilterValue::String("bar".to_string()),
+                        regex: None,
+                        json_key: Some("k2".to_string()),
+                    })),
+                )),
+                Box::new(JsonExpr::Condition(FilterCondition {
+                    operator: FilterOp::JsonEquals,
+                    value: FilterValue::Boolean(true),
+                    regex: None,
+                    json_key: Some("k3".to_string()),
+                })),
+            ))],
+        };
+        assert_eq!(
+            query.display_string(),
+            r#"| (k1 = "foo" or k2 = "bar") and k3 = true"#
+        );
     }
 }
