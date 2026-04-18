@@ -614,11 +614,14 @@ fn test_slash_starts_empty() {
 
     // Press / again — should start with empty input
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
 
     // Up arrow should load the previous query from history
     t.press(KeyCode::Up, KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(r#"|= "hello""#));
+    assert_eq!(
+        t.app.filter_input.as_ref().map(|i| i.value()),
+        Some(r#"|= "hello""#)
+    );
 }
 
 #[test]
@@ -643,29 +646,32 @@ fn test_filter_history_up_down() {
 
     // Enter filter mode — starts with empty input
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
 
     // Up should show the last (combined) query
     t.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_deref(),
+        t.app.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "first" |= "second""#)
     );
 
     // Up again should show the first query
     t.press(KeyCode::Up, KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(r#"|= "first""#));
+    assert_eq!(
+        t.app.filter_input.as_ref().map(|i| i.value()),
+        Some(r#"|= "first""#)
+    );
 
     // Down should go back to second (combined filter)
     t.press(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_deref(),
+        t.app.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "first" |= "second""#)
     );
 
     // Down past end should restore empty draft
     t.press(KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
 }
 
 #[test]
@@ -686,7 +692,7 @@ fn test_empty_enter_clears_filter_then_slash_starts_empty() {
 
     // Open filter, press Enter with empty input — should clear filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(t.app.filter_input.is_none());
     t.render();
@@ -699,7 +705,7 @@ fn test_empty_enter_clears_filter_then_slash_starts_empty() {
 
     // Press / again — should start with empty input
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
 }
 
 #[test]
@@ -795,21 +801,22 @@ fn test_ctrl_r_preserves_search_pattern() {
     // First Ctrl+R should find a match
     let first_match = t.app.filter_input.clone().unwrap();
     assert!(
-        first_match.contains("alpha"),
+        first_match.value().contains("alpha"),
         "First match should contain 'alpha', got: {}",
-        first_match
+        first_match.value()
     );
 
     // Second Ctrl+R should find a different (older) match
     t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
     let second_match = t.app.filter_input.clone().unwrap();
     assert!(
-        second_match.contains("alpha"),
+        second_match.value().contains("alpha"),
         "Second match should still contain 'alpha', got: {}",
-        second_match
+        second_match.value()
     );
     assert_ne!(
-        first_match, second_match,
+        first_match.value(),
+        second_match.value(),
         "Second Ctrl+R should find a different entry"
     );
 }
@@ -843,14 +850,14 @@ fn test_ctrl_r_type_adds_to_pattern() {
     // Should match only "alpha" entries, not "beta"
     let matched = t.app.filter_input.clone().unwrap();
     assert!(
-        matched.contains("alpha"),
+        matched.value().contains("alpha"),
         "Should match 'alpha' filter, got: {}",
-        matched
+        matched.value()
     );
     assert!(
-        !matched.contains("beta"),
+        !matched.value().contains("beta"),
         "Should NOT match 'beta' filter, got: {}",
-        matched
+        matched.value()
     );
 
     // Should show search pattern "alpha" in input line
@@ -891,7 +898,14 @@ fn test_ctrl_r_backspace_removes_from_pattern() {
     }
 
     // Should match "alpha"
-    assert!(t.app.filter_input.as_ref().unwrap().contains("alpha"));
+    assert!(
+        t.app
+            .filter_input
+            .as_ref()
+            .unwrap()
+            .value()
+            .contains("alpha")
+    );
 
     // Backspace to remove "a" → pattern becomes "alph"
     t.press(KeyCode::Backspace, KeyModifiers::NONE);
@@ -908,7 +922,14 @@ fn test_ctrl_r_backspace_removes_from_pattern() {
     );
 
     // Should still match "alpha" (contains "alph")
-    assert!(t.app.filter_input.as_ref().unwrap().contains("alpha"));
+    assert!(
+        t.app
+            .filter_input
+            .as_ref()
+            .unwrap()
+            .value()
+            .contains("alpha")
+    );
 }
 
 #[test]
@@ -938,7 +959,7 @@ fn test_ctrl_g_cancels_search_restores_input() {
     // Ctrl+G should cancel search and restore original input
     t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     assert_eq!(
-        t.app.filter_input.as_deref(),
+        t.app.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "beta""#),
         "Ctrl+G should restore original input"
     );
@@ -1042,14 +1063,14 @@ fn test_ctrl_r_uses_typed_text_as_initial_pattern() {
     // Should find a history entry containing "alpha", NOT the most recent "|= beta"
     let matched = t.app.filter_input.clone().unwrap();
     assert!(
-        matched.contains("alpha"),
+        matched.value().contains("alpha"),
         "Should match 'alpha' (initial pattern from typed text), got: {}",
-        matched
+        matched.value()
     );
     assert!(
-        !matched.contains(r#"|= "beta""#),
+        !matched.value().contains(r#"|= "beta""#),
         "Should NOT match '|= \"beta\"' entry, got: {}",
-        matched
+        matched.value()
     );
 }
 

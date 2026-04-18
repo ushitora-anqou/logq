@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::Local;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -522,7 +522,7 @@ pub struct App {
     pub auto_scroll: bool,
     pub detail_scroll: u16,
     pub detail_entry: Option<LogEntry>,
-    pub filter_input: Option<String>,
+    pub filter_input: Option<tui_input::Input>,
     pub max_lines: usize,
     pub should_quit: bool,
     colors: HighlightColors,
@@ -532,9 +532,9 @@ pub struct App {
     live_filter_error: Option<String>,
     filter_history: Vec<String>,
     filter_history_index: Option<usize>,
-    filter_draft: Option<String>,
+    filter_draft: Option<tui_input::Input>,
     history_search_pattern: Option<String>,
-    history_search_original_input: Option<String>,
+    history_search_original_input: Option<tui_input::Input>,
     history_search_failed: bool,
     history_search_start: Option<usize>,
     filtered_indices_cache: Option<Vec<usize>>,
@@ -552,6 +552,7 @@ impl App {
             detail_scroll: 0,
             detail_entry: None,
             filter_input: None,
+
             max_lines,
             should_quit: false,
             colors: HighlightColors::default(),
@@ -753,7 +754,7 @@ impl App {
 
             // Handle filter input mode
             if self.filter_input.is_some() {
-                self.handle_filter_input(key.code, key.modifiers);
+                self.handle_filter_input(key);
                 return;
             }
 
@@ -770,7 +771,7 @@ impl App {
 
     fn update_live_filter(&mut self) {
         if let Some(input) = &self.filter_input {
-            match parse_filter_query(input) {
+            match parse_filter_query(input.value()) {
                 Ok(query) if !query.segments.is_empty() => {
                     self.live_filter_query = Some(query);
                     self.live_filter_error = None;
@@ -789,103 +790,55 @@ impl App {
         }
     }
 
-    fn handle_filter_input(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        match code {
-            KeyCode::Enter => {
-                if let Some(input) = self.filter_input.take() {
-                    match parse_filter_query(&input) {
-                        Ok(query) if !query.segments.is_empty() => {
-                            self.filter_query = Some(query);
-                            self.filter_error = None;
-                            self.live_filter_query = None;
-                            self.live_filter_error = None;
-                            self.filtered_indices_cache = None;
-                            if self.filter_history.last() != Some(&input) {
-                                self.filter_history.push(input);
-                                if self.filter_history.len() > 100 {
-                                    self.filter_history.remove(0);
-                                }
-                            }
-                        }
-                        Ok(_) => {
-                            self.filter_query = None;
-                            self.filter_error = None;
-                            self.live_filter_query = None;
-                            self.live_filter_error = None;
-                            self.filtered_indices_cache = None;
-                        }
-                        Err(msg) => {
-                            self.filter_error = Some(msg.clone());
-                            self.live_filter_error = Some(msg);
-                            self.filter_input = Some(input);
-                        }
-                    }
+    fn handle_filter_input(&mut self, key: KeyEvent) {
+        // History search mode: characters go to search pattern
+        if let Some(pattern) = &mut self.history_search_pattern {
+            match key.code {
+                KeyCode::Enter => {
+                    self.apply_filter_submit();
                 }
-                self.filter_draft = None;
-                self.filter_history_index = None;
-                self.history_search_pattern = None;
-                self.history_search_original_input = None;
-                self.history_search_failed = false;
-                self.history_search_start = None;
-                let filtered = self.filtered_indices();
-                if !filtered.is_empty() {
-                    if self.selected > filtered[filtered.len() - 1] {
-                        self.selected = filtered[filtered.len() - 1];
-                    } else if !filtered.contains(&self.selected) {
-                        self.selected = filtered[0];
-                    }
-                }
-            }
-            KeyCode::Esc => {
-                if self.history_search_pattern.is_some() {
+                KeyCode::Esc => {
                     // Accept the current match, exit search only
                     self.history_search_pattern = None;
                     self.history_search_original_input = None;
                     self.history_search_failed = false;
                     self.history_search_start = None;
-                } else {
-                    // Cancel entire filter input mode
-                    self.filter_input = None;
-                    self.filter_error = None;
-                    self.live_filter_query = None;
-                    self.live_filter_error = None;
-                    self.filter_draft = None;
-                    self.filter_history_index = None;
-                    self.history_search_pattern = None;
-                    self.history_search_original_input = None;
-                    self.history_search_failed = false;
-                    self.history_search_start = None;
-                    self.filtered_indices_cache = None;
                 }
-            }
-            KeyCode::Backspace => {
-                if let Some(pattern) = &mut self.history_search_pattern {
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.handle_history_search();
+                }
+                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.filter_input = self.history_search_original_input.take();
+                    self.history_search_pattern = None;
+                    self.history_search_start = None;
+                    self.history_search_failed = false;
+                    self.update_live_filter();
+                }
+                KeyCode::Backspace => {
                     pattern.pop();
                     self.history_search_update();
-                } else if let Some(input) = &mut self.filter_input {
-                    if input.is_empty() {
-                        // Stay in filter input mode when input is empty
-                    } else {
-                        input.pop();
-                        self.filter_error = None;
-                        self.update_live_filter();
-                    }
                 }
+                KeyCode::Char(c) => {
+                    pattern.push(c);
+                    self.history_search_update();
+                }
+                _ => {}
             }
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.filter_input = None;
-                self.filter_error = None;
-                self.live_filter_query = None;
-                self.live_filter_error = None;
-                self.filter_draft = None;
-                self.filter_history_index = None;
-                self.history_search_pattern = None;
-                self.history_search_original_input = None;
-                self.history_search_failed = false;
-                self.history_search_start = None;
-                self.filtered_indices_cache = None;
+            return;
+        }
+
+        // Normal editing mode
+        match key.code {
+            KeyCode::Enter => {
+                self.apply_filter_submit();
             }
-            KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Esc => {
+                self.cancel_filter_input();
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cancel_filter_input();
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.handle_history_search();
             }
             KeyCode::Up => {
@@ -896,27 +849,78 @@ impl App {
                 self.clear_history_search();
                 self.handle_history_down();
             }
-            KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.history_search_pattern.is_some() {
-                    self.filter_input = self.history_search_original_input.take();
-                    self.history_search_pattern = None;
-                    self.history_search_start = None;
-                    self.history_search_failed = false;
-                    self.update_live_filter();
+            _ => {
+                // Delegate all other editing to tui-input
+                if let Some(input) = &mut self.filter_input {
+                    use tui_input::backend::crossterm::EventHandler;
+                    if input.handle_event(&Event::Key(key)).is_some() {
+                        self.filter_error = None;
+                        self.update_live_filter();
+                    }
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(pattern) = &mut self.history_search_pattern {
-                    pattern.push(c);
-                    self.history_search_update();
-                } else if let Some(input) = &mut self.filter_input {
-                    input.push(c);
-                    self.filter_error = None;
-                    self.update_live_filter();
-                }
-            }
-            _ => {}
         }
+    }
+
+    fn apply_filter_submit(&mut self) {
+        if let Some(input) = self.filter_input.take() {
+            let value = input.value().to_string();
+            match parse_filter_query(&value) {
+                Ok(query) if !query.segments.is_empty() => {
+                    self.filter_query = Some(query);
+                    self.filter_error = None;
+                    self.live_filter_query = None;
+                    self.live_filter_error = None;
+                    self.filtered_indices_cache = None;
+                    if self.filter_history.last() != Some(&value) {
+                        self.filter_history.push(value);
+                        if self.filter_history.len() > 100 {
+                            self.filter_history.remove(0);
+                        }
+                    }
+                }
+                Ok(_) => {
+                    self.filter_query = None;
+                    self.filter_error = None;
+                    self.live_filter_query = None;
+                    self.live_filter_error = None;
+                    self.filtered_indices_cache = None;
+                }
+                Err(msg) => {
+                    self.filter_error = Some(msg.clone());
+                    self.live_filter_error = Some(msg);
+                    self.filter_input = Some(input);
+                }
+            }
+        }
+        self.filter_draft = None;
+        self.filter_history_index = None;
+        self.history_search_pattern = None;
+        self.history_search_original_input = None;
+        self.history_search_failed = false;
+        self.history_search_start = None;
+        let filtered = self.filtered_indices();
+        if !filtered.is_empty() {
+            if self.selected > filtered[filtered.len() - 1] {
+                self.selected = filtered[filtered.len() - 1];
+            } else if !filtered.contains(&self.selected) {
+                self.selected = filtered[0];
+            }
+        }
+    }
+
+    fn cancel_filter_input(&mut self) {
+        self.filter_input = None;
+        self.filter_error = None;
+        self.live_filter_query = None;
+        self.live_filter_error = None;
+        self.filter_draft = None;
+        self.filter_history_index = None;
+        self.history_search_pattern = None;
+        self.history_search_original_input = None;
+        self.history_search_failed = false;
+        self.history_search_start = None;
+        self.filtered_indices_cache = None;
     }
 
     fn handle_history_up(&mut self) {
@@ -932,7 +936,9 @@ impl App {
             .unwrap_or(self.filter_history.len());
         if current > 0 {
             self.filter_history_index = Some(current - 1);
-            self.filter_input = Some(self.filter_history[current - 1].clone());
+            self.filter_input = Some(tui_input::Input::new(
+                self.filter_history[current - 1].clone(),
+            ));
             self.update_live_filter();
         }
     }
@@ -946,12 +952,17 @@ impl App {
             .unwrap_or(self.filter_history.len());
         if current < self.filter_history.len() - 1 {
             self.filter_history_index = Some(current + 1);
-            self.filter_input = Some(self.filter_history[current + 1].clone());
+            self.filter_input = Some(tui_input::Input::new(
+                self.filter_history[current + 1].clone(),
+            ));
             self.update_live_filter();
         } else {
             // Past the end: restore draft
             self.filter_history_index = None;
-            self.filter_input = self.filter_draft.clone().or_else(|| Some(String::new()));
+            self.filter_input = self
+                .filter_draft
+                .clone()
+                .or_else(|| Some(tui_input::Input::default()));
             self.update_live_filter();
         }
     }
@@ -963,7 +974,7 @@ impl App {
 
         // Activate search mode if not already active
         if self.history_search_pattern.is_none() {
-            self.history_search_pattern = self.filter_input.clone();
+            self.history_search_pattern = self.filter_input.as_ref().map(|i| i.value().to_string());
             self.history_search_original_input = self.filter_input.clone();
             self.history_search_start = None;
         }
@@ -976,7 +987,7 @@ impl App {
         // Search backwards from current position
         for i in (0..start).rev() {
             if self.filter_history[i].contains(pattern) {
-                self.filter_input = Some(self.filter_history[i].clone());
+                self.filter_input = Some(tui_input::Input::new(self.filter_history[i].clone()));
                 self.history_search_start = Some(i);
                 self.history_search_failed = false;
                 self.update_live_filter();
@@ -987,7 +998,7 @@ impl App {
         if start < self.filter_history.len() {
             for i in (start..self.filter_history.len()).rev() {
                 if self.filter_history[i].contains(pattern) {
-                    self.filter_input = Some(self.filter_history[i].clone());
+                    self.filter_input = Some(tui_input::Input::new(self.filter_history[i].clone()));
                     self.history_search_start = Some(i);
                     self.history_search_failed = false;
                     self.update_live_filter();
@@ -1004,7 +1015,7 @@ impl App {
         let pattern = self.history_search_pattern.as_deref().unwrap_or("");
         for i in (0..self.filter_history.len()).rev() {
             if self.filter_history[i].contains(pattern) {
-                self.filter_input = Some(self.filter_history[i].clone());
+                self.filter_input = Some(tui_input::Input::new(self.filter_history[i].clone()));
                 self.history_search_start = Some(i);
                 self.history_search_failed = false;
                 self.update_live_filter();
@@ -1069,7 +1080,7 @@ impl App {
                 self.detail_entry = Some(self.lines[self.selected].clone());
             }
             (KeyCode::Char('/'), _) => {
-                self.filter_input = Some(String::new());
+                self.filter_input = Some(tui_input::Input::default());
                 self.filter_history_index = None;
                 self.filter_draft = None;
                 self.clear_history_search();
@@ -1159,8 +1170,8 @@ impl App {
                 };
                 (1 + prefix_len + pattern.len()) as u16
             } else {
-                let input = self.filter_input.as_deref().unwrap_or("");
-                (1 + input.len()) as u16
+                let input = self.filter_input.as_ref().unwrap();
+                (1 + input.visual_cursor()) as u16
             };
             frame.set_cursor_position((cursor_x, chunks[2].y));
         } else {
@@ -1293,7 +1304,7 @@ impl App {
             } else {
                 "(reverse-i-search)"
             };
-            let matched = self.filter_input.as_deref().unwrap_or("");
+            let matched = self.filter_input.as_ref().map(|i| i.value()).unwrap_or("");
             vec![
                 Span::styled(
                     format!(" {}'{}': ", label, pattern),
@@ -1305,7 +1316,7 @@ impl App {
                 ),
             ]
         } else {
-            let input = self.filter_input.as_deref().unwrap_or("");
+            let input = self.filter_input.as_ref().map(|i| i.value()).unwrap_or("");
             vec![Span::styled(
                 format!(" {}", input),
                 Style::default().fg(Color::White).bg(Color::DarkGray),
@@ -2503,7 +2514,7 @@ mod tests {
         app.add_line("foo bar line".to_string());
 
         // Start filter input mode with a valid query
-        app.filter_input = Some(r#"|= "foo""#.to_string());
+        app.filter_input = Some(tui_input::Input::new(r#"|= "foo""#.to_string()));
         app.update_live_filter();
         assert!(app.live_filter_query.is_some());
         assert!(app.live_filter_error.is_none());
@@ -2511,7 +2522,7 @@ mod tests {
         assert_eq!(filtered, vec![0, 2]);
 
         // Add invalid suffix: parse error, but previous valid query should be kept
-        app.filter_input = Some(r#"|= "foo" |"#.to_string());
+        app.filter_input = Some(tui_input::Input::new(r#"|= "foo" |"#.to_string()));
         app.update_live_filter();
         assert!(
             app.live_filter_query.is_some(),
@@ -2526,7 +2537,7 @@ mod tests {
         );
 
         // Continue typing to make it valid again with two conditions
-        app.filter_input = Some(r#"|= "foo" |= "bar""#.to_string());
+        app.filter_input = Some(tui_input::Input::new(r#"|= "foo" |= "bar""#.to_string()));
         app.update_live_filter();
         assert!(app.live_filter_query.is_some());
         assert!(app.live_filter_error.is_none());
@@ -2538,7 +2549,7 @@ mod tests {
     fn test_live_filter_no_previous_keeps_none_on_error() {
         let mut app = App::new(100);
         // No previous valid query: error with live_filter_query still None
-        app.filter_input = Some("|".to_string());
+        app.filter_input = Some(tui_input::Input::new("|".to_string()));
         app.update_live_filter();
         assert!(app.live_filter_query.is_none());
         assert!(app.live_filter_error.is_some());
@@ -2939,7 +2950,7 @@ mod tests {
         app.filtered_indices_cache = None;
 
         // Start typing a new filter query
-        app.filter_input = Some(r#"|= "bar""#.to_string());
+        app.filter_input = Some(tui_input::Input::new(r#"|= "bar""#.to_string()));
         app.update_live_filter();
 
         // Render and check breadcrumb shows the live filter

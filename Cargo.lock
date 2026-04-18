@@ -767,6 +767,7 @@ dependencies = [
  "regex",
  "serde_json",
  "tokio",
+ "tui-input",
 ]
 
 [[package]]
@@ -1584,6 +1585,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tui-input"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b1008d4ecf7480f905288022b62588424440553f2ab5cd123edce0469439da6"
+dependencies = [
+ "ratatui",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
