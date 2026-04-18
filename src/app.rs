@@ -533,7 +533,9 @@ pub struct App {
     filter_history: Vec<String>,
     filter_history_index: Option<usize>,
     filter_draft: Option<String>,
-    history_search_active: bool,
+    history_search_pattern: Option<String>,
+    history_search_original_input: Option<String>,
+    history_search_failed: bool,
     history_search_start: Option<usize>,
     filtered_indices_cache: Option<Vec<usize>>,
 }
@@ -560,7 +562,9 @@ impl App {
             filter_history: Vec::new(),
             filter_history_index: None,
             filter_draft: None,
-            history_search_active: false,
+            history_search_pattern: None,
+            history_search_original_input: None,
+            history_search_failed: false,
             history_search_start: None,
             filtered_indices_cache: None,
         }
@@ -819,7 +823,9 @@ impl App {
                 }
                 self.filter_draft = None;
                 self.filter_history_index = None;
-                self.history_search_active = false;
+                self.history_search_pattern = None;
+                self.history_search_original_input = None;
+                self.history_search_failed = false;
                 self.history_search_start = None;
                 let filtered = self.filtered_indices();
                 if !filtered.is_empty() {
@@ -831,25 +837,37 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                self.filter_input = None;
-                self.filter_error = None;
-                self.live_filter_query = None;
-                self.live_filter_error = None;
-                self.filter_draft = None;
-                self.filter_history_index = None;
-                self.history_search_active = false;
-                self.history_search_start = None;
-                self.filtered_indices_cache = None;
+                if self.history_search_pattern.is_some() {
+                    // Accept the current match, exit search only
+                    self.history_search_pattern = None;
+                    self.history_search_original_input = None;
+                    self.history_search_failed = false;
+                    self.history_search_start = None;
+                } else {
+                    // Cancel entire filter input mode
+                    self.filter_input = None;
+                    self.filter_error = None;
+                    self.live_filter_query = None;
+                    self.live_filter_error = None;
+                    self.filter_draft = None;
+                    self.filter_history_index = None;
+                    self.history_search_pattern = None;
+                    self.history_search_original_input = None;
+                    self.history_search_failed = false;
+                    self.history_search_start = None;
+                    self.filtered_indices_cache = None;
+                }
             }
             KeyCode::Backspace => {
-                if let Some(input) = &mut self.filter_input {
+                if let Some(pattern) = &mut self.history_search_pattern {
+                    pattern.pop();
+                    self.history_search_update();
+                } else if let Some(input) = &mut self.filter_input {
                     if input.is_empty() {
                         // Stay in filter input mode when input is empty
                     } else {
                         input.pop();
                         self.filter_error = None;
-                        self.history_search_active = false;
-                        self.history_search_start = None;
                         self.update_live_filter();
                     }
                 }
@@ -861,7 +879,9 @@ impl App {
                 self.live_filter_error = None;
                 self.filter_draft = None;
                 self.filter_history_index = None;
-                self.history_search_active = false;
+                self.history_search_pattern = None;
+                self.history_search_original_input = None;
+                self.history_search_failed = false;
                 self.history_search_start = None;
                 self.filtered_indices_cache = None;
             }
@@ -869,21 +889,29 @@ impl App {
                 self.handle_history_search();
             }
             KeyCode::Up => {
-                self.history_search_active = false;
-                self.history_search_start = None;
+                self.clear_history_search();
                 self.handle_history_up();
             }
             KeyCode::Down => {
-                self.history_search_active = false;
-                self.history_search_start = None;
+                self.clear_history_search();
                 self.handle_history_down();
             }
+            KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.history_search_pattern.is_some() {
+                    self.filter_input = self.history_search_original_input.take();
+                    self.history_search_pattern = None;
+                    self.history_search_start = None;
+                    self.history_search_failed = false;
+                    self.update_live_filter();
+                }
+            }
             KeyCode::Char(c) => {
-                if let Some(input) = &mut self.filter_input {
+                if let Some(pattern) = &mut self.history_search_pattern {
+                    pattern.push(c);
+                    self.history_search_update();
+                } else if let Some(input) = &mut self.filter_input {
                     input.push(c);
                     self.filter_error = None;
-                    self.history_search_active = false;
-                    self.history_search_start = None;
                     self.update_live_filter();
                 }
             }
@@ -932,36 +960,68 @@ impl App {
         if self.filter_history.is_empty() {
             return;
         }
-        let search_term = self
-            .filter_draft
-            .as_deref()
-            .or(self.filter_input.as_deref())
-            .unwrap_or("");
+
+        // Activate search mode if not already active
+        if self.history_search_pattern.is_none() {
+            self.history_search_pattern = self.filter_input.clone();
+            self.history_search_original_input = self.filter_input.clone();
+            self.history_search_start = None;
+        }
+
+        let pattern = self.history_search_pattern.as_deref().unwrap_or("");
         let start = self
             .history_search_start
             .unwrap_or(self.filter_history.len());
-        // Search backwards from start
+
+        // Search backwards from current position
         for i in (0..start).rev() {
-            if self.filter_history[i].contains(search_term) {
+            if self.filter_history[i].contains(pattern) {
                 self.filter_input = Some(self.filter_history[i].clone());
                 self.history_search_start = Some(i);
-                self.history_search_active = true;
+                self.history_search_failed = false;
                 self.update_live_filter();
                 return;
             }
         }
-        // Wrapped around: try from the end
+        // Wrap around: try from the end
         if start < self.filter_history.len() {
             for i in (start..self.filter_history.len()).rev() {
-                if self.filter_history[i].contains(search_term) {
+                if self.filter_history[i].contains(pattern) {
                     self.filter_input = Some(self.filter_history[i].clone());
                     self.history_search_start = Some(i);
-                    self.history_search_active = true;
+                    self.history_search_failed = false;
                     self.update_live_filter();
                     return;
                 }
             }
         }
+        // No match found
+        self.history_search_failed = true;
+    }
+
+    fn history_search_update(&mut self) {
+        // Re-search from the end of history with the updated pattern
+        let pattern = self.history_search_pattern.as_deref().unwrap_or("");
+        for i in (0..self.filter_history.len()).rev() {
+            if self.filter_history[i].contains(pattern) {
+                self.filter_input = Some(self.filter_history[i].clone());
+                self.history_search_start = Some(i);
+                self.history_search_failed = false;
+                self.update_live_filter();
+                return;
+            }
+        }
+        // No match
+        self.history_search_failed = true;
+        self.filter_input = self.history_search_original_input.clone();
+        self.update_live_filter();
+    }
+
+    fn clear_history_search(&mut self) {
+        self.history_search_pattern = None;
+        self.history_search_original_input = None;
+        self.history_search_failed = false;
+        self.history_search_start = None;
     }
 
     fn handle_list_key(&mut self, code: KeyCode, modifiers: KeyModifiers, visible_height: usize) {
@@ -1012,8 +1072,7 @@ impl App {
                 self.filter_input = Some(String::new());
                 self.filter_history_index = None;
                 self.filter_draft = None;
-                self.history_search_active = false;
-                self.history_search_start = None;
+                self.clear_history_search();
                 self.update_live_filter();
             }
             (KeyCode::Esc, _) => {
@@ -1092,8 +1151,17 @@ impl App {
             self.render_help_line1(frame, chunks[3]);
             self.render_help_line2(frame, chunks[4]);
 
-            let input = self.filter_input.as_deref().unwrap_or("");
-            let cursor_x = (1 + input.len()) as u16;
+            let cursor_x = if let Some(pattern) = &self.history_search_pattern {
+                let prefix_len = if self.history_search_failed {
+                    "(failed reverse-i-search)'".len()
+                } else {
+                    "(reverse-i-search)'".len()
+                };
+                (1 + prefix_len + pattern.len()) as u16
+            } else {
+                let input = self.filter_input.as_deref().unwrap_or("");
+                (1 + input.len()) as u16
+            };
             frame.set_cursor_position((cursor_x, chunks[2].y));
         } else {
             // Normal mode: breadcrumb + content + help1 + help2
@@ -1219,11 +1287,30 @@ impl App {
         let bg = Style::default().bg(Color::DarkGray);
         let width = area.width as usize;
 
-        let input = self.filter_input.as_deref().unwrap_or("");
-        let mut s = vec![Span::styled(
-            format!(" {}", input),
-            Style::default().fg(Color::White).bg(Color::DarkGray),
-        )];
+        let mut s: Vec<Span<'static>> = if let Some(pattern) = &self.history_search_pattern {
+            let label = if self.history_search_failed {
+                "(failed reverse-i-search)"
+            } else {
+                "(reverse-i-search)"
+            };
+            let matched = self.filter_input.as_deref().unwrap_or("");
+            vec![
+                Span::styled(
+                    format!(" {}'{}': ", label, pattern),
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray),
+                ),
+                Span::styled(
+                    matched.to_string(),
+                    Style::default().fg(Color::White).bg(Color::DarkGray),
+                ),
+            ]
+        } else {
+            let input = self.filter_input.as_deref().unwrap_or("");
+            vec![Span::styled(
+                format!(" {}", input),
+                Style::default().fg(Color::White).bg(Color::DarkGray),
+            )]
+        };
 
         let error = self
             .live_filter_error
@@ -1249,8 +1336,8 @@ impl App {
     fn render_help_line1(&self, frame: &mut Frame, area: Rect) {
         let text = match self.view_mode {
             ViewMode::List if self.filter_input.is_some() => {
-                if self.history_search_active {
-                    " C-r:next  Enter:apply  Esc:cancel"
+                if self.history_search_pattern.is_some() {
+                    " C-r:next  C-g:cancel  Enter:apply  Esc:accept"
                 } else {
                     " Enter:apply  ↑↓:history  C-r:search  Esc:cancel"
                 }

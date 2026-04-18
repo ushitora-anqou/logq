@@ -767,6 +767,293 @@ fn test_ctrl_r_reverse_search() {
 }
 
 #[test]
+fn test_ctrl_r_preserves_search_pattern() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply two different filters
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode, type "alpha" as search pattern, then Ctrl+R
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "alpha".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+
+    // First Ctrl+R should find a match
+    let first_match = t.app.filter_input.clone().unwrap();
+    assert!(
+        first_match.contains("alpha"),
+        "First match should contain 'alpha', got: {}",
+        first_match
+    );
+
+    // Second Ctrl+R should find a different (older) match
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    let second_match = t.app.filter_input.clone().unwrap();
+    assert!(
+        second_match.contains("alpha"),
+        "Second match should still contain 'alpha', got: {}",
+        second_match
+    );
+    assert_ne!(
+        first_match, second_match,
+        "Second Ctrl+R should find a different entry"
+    );
+}
+
+#[test]
+fn test_ctrl_r_type_adds_to_pattern() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply filters: one with "alpha", one with "beta"
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode, Ctrl+R to start search, then type "alpha"
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    for c in "alpha".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+
+    // Should match only "alpha" entries, not "beta"
+    let matched = t.app.filter_input.clone().unwrap();
+    assert!(
+        matched.contains("alpha"),
+        "Should match 'alpha' filter, got: {}",
+        matched
+    );
+    assert!(
+        !matched.contains("beta"),
+        "Should NOT match 'beta' filter, got: {}",
+        matched
+    );
+
+    // Should show search pattern "alpha" in input line
+    t.render();
+    assert!(
+        t.screen_contains("alpha"),
+        "Input line should show the search pattern 'alpha'"
+    );
+    assert!(
+        t.screen_contains("reverse-i-search"),
+        "Should show 'reverse-i-search' prompt"
+    );
+}
+
+#[test]
+fn test_ctrl_r_backspace_removes_from_pattern() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode, Ctrl+R, type "alpha"
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    for c in "alpha".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+
+    // Should match "alpha"
+    assert!(t.app.filter_input.as_ref().unwrap().contains("alpha"));
+
+    // Backspace to remove "a" → pattern becomes "alph"
+    t.press(KeyCode::Backspace, KeyModifiers::NONE);
+
+    // Still in search mode - render and check
+    t.render();
+    assert!(
+        t.screen_contains("reverse-i-search"),
+        "Should still be in search mode after backspace"
+    );
+    assert!(
+        t.screen_contains("alph"),
+        "Should show shortened pattern 'alph'"
+    );
+
+    // Should still match "alpha" (contains "alph")
+    assert!(t.app.filter_input.as_ref().unwrap().contains("alpha"));
+}
+
+#[test]
+fn test_ctrl_g_cancels_search_restores_input() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply a filter to create history
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode with some text
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+
+    // Press Ctrl+R to enter search mode (saves current input)
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    t.render();
+    assert!(t.screen_contains("reverse-i-search"));
+
+    // Ctrl+G should cancel search and restore original input
+    t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    assert_eq!(
+        t.app.filter_input.as_deref(),
+        Some(r#"|= "beta""#),
+        "Ctrl+G should restore original input"
+    );
+    // Should still be in filter input mode
+    assert!(t.app.filter_input.is_some());
+}
+
+#[test]
+fn test_ctrl_r_failed_search_shows_feedback() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply a filter to create history
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode, Ctrl+R, type non-matching text
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    for c in "zzzzz".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.render();
+
+    assert!(
+        t.screen_contains("failed"),
+        "Should show 'failed' feedback for non-matching search"
+    );
+}
+
+#[test]
+fn test_ctrl_r_esc_accepts_stays_in_input() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Apply filters to create history
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Enter filter mode, Ctrl+R
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+
+    // Esc should accept the match and exit search mode only
+    t.press(KeyCode::Esc, KeyModifiers::NONE);
+
+    // Should still be in filter input mode with the matched entry
+    assert!(
+        t.app.filter_input.is_some(),
+        "Should still be in filter input mode"
+    );
+
+    // Search mode should be exited - render and check no search prompt
+    t.render();
+    assert!(
+        !t.screen_contains("reverse-i-search"),
+        "Search prompt should be gone after Esc"
+    );
+}
+
+#[test]
+fn test_ctrl_r_uses_typed_text_as_initial_pattern() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Create history: alpha, alpha beta, beta (in this order)
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "alpha beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "beta""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    // Type "alpha" then press Ctrl+R — should use "alpha" as initial search pattern
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "alpha".chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+
+    // Should find a history entry containing "alpha", NOT the most recent "|= beta"
+    let matched = t.app.filter_input.clone().unwrap();
+    assert!(
+        matched.contains("alpha"),
+        "Should match 'alpha' (initial pattern from typed text), got: {}",
+        matched
+    );
+    assert!(
+        !matched.contains(r#"|= "beta""#),
+        "Should NOT match '|= \"beta\"' entry, got: {}",
+        matched
+    );
+}
+
+#[test]
 fn test_detail_q_returns_to_list() {
     let mut t = TestApp::new(10000);
     t.add_line("hello world");
