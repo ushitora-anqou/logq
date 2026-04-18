@@ -49,6 +49,11 @@ fn redirect_stdin_to_tty() -> io::Result<Option<File>> {
 }
 
 fn main() -> io::Result<()> {
+    // Ignore SIGPIPE so logq never dies from writing to a closed pipe
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
@@ -61,12 +66,13 @@ fn main() -> io::Result<()> {
     };
 
     let saved_stdin = redirect_stdin_to_tty()?;
+    let is_pipe_mode = saved_stdin.is_some() && command.is_none();
 
     let mut terminal = ratatui::init();
-    let (rx, mut child) = if command.is_none() && saved_stdin.is_none() {
+    let (rx, mut child, reader_handle) = if command.is_none() && saved_stdin.is_none() {
         // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
         let (_, rx) = tokio::sync::mpsc::unbounded_channel();
-        (rx, None)
+        (rx, None, None)
     } else {
         logq::input::spawn_line_reader(command, saved_stdin)
     };
@@ -75,6 +81,7 @@ fn main() -> io::Result<()> {
     app.load_history();
     let result = run_app(&mut terminal, &mut app, rx, &mut child);
 
+    // Command mode: kill spawned child process group
     if let Some(ref mut c) = child
         && let Some(pid) = c.id()
     {
@@ -94,8 +101,34 @@ fn main() -> io::Result<()> {
         });
     }
 
+    // Save state and restore terminal before any signal-based cleanup
     app.save_history();
     ratatui::restore();
+
+    // Abort the reader task to close the pipe read end promptly.
+    // Without this, the async task holds the file handle indefinitely,
+    // preventing the upstream command from receiving SIGPIPE.
+    if let Some(handle) = reader_handle {
+        handle.abort();
+    }
+
+    // Pipe mode: terminate the upstream command in the pipeline.
+    // After abort(), the pipe read end is closed and the upstream should
+    // get SIGPIPE. As a fallback, also send SIGTERM to the process group
+    // (handles commands that ignore SIGPIPE or haven't written yet).
+    if is_pipe_mode {
+        let pgid = unsafe { libc::getpgrp() };
+        // Protect ourselves from the SIGTERM we're about to send
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        }
+    }
+
     result
 }
 

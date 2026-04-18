@@ -3,6 +3,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// Spawns a line reader that sends each line through the channel.
 /// For stdin mode, reads from the given file (or tokio::stdin if None).
@@ -10,7 +11,11 @@ use tokio::sync::mpsc;
 pub fn spawn_line_reader(
     command: Option<Vec<String>>,
     stdin_file: Option<File>,
-) -> (mpsc::UnboundedReceiver<String>, Option<Child>) {
+) -> (
+    mpsc::UnboundedReceiver<String>,
+    Option<Child>,
+    Option<JoinHandle<()>>,
+) {
     let (tx, rx) = mpsc::unbounded_channel();
 
     match command {
@@ -28,23 +33,23 @@ pub fn spawn_line_reader(
 
             let stdout = child.stdout.take().expect("Failed to capture stdout");
             let reader = BufReader::new(stdout);
-            tokio::spawn(read_lines(reader, tx));
+            let handle = tokio::spawn(read_lines(reader, tx));
 
-            (rx, Some(child))
+            (rx, Some(child), Some(handle))
         }
         None => {
-            match stdin_file {
+            let handle = match stdin_file {
                 Some(file) => {
                     let async_file = tokio::fs::File::from_std(file);
                     let reader = BufReader::new(async_file);
-                    tokio::spawn(read_lines(reader, tx));
+                    tokio::spawn(read_lines(reader, tx))
                 }
                 None => {
                     let reader = BufReader::new(tokio::io::stdin());
-                    tokio::spawn(read_lines(reader, tx));
+                    tokio::spawn(read_lines(reader, tx))
                 }
-            }
-            (rx, None)
+            };
+            (rx, None, Some(handle))
         }
     }
 }
