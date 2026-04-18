@@ -1119,7 +1119,7 @@ impl App {
 
     fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
         let mut parts = Vec::new();
-        if let Some(q) = &self.filter_query {
+        if let Some(q) = self.active_filter_query() {
             parts.push(format!("[filter: {}]", q.display_string()));
         }
         if self.view_mode == ViewMode::Detail {
@@ -2827,6 +2827,49 @@ mod tests {
         assert!(
             rendered.contains("preserved-text"),
             "detail view should show preserved entry text, got: {}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn test_breadcrumb_updates_live_during_filter_input() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new(100);
+        app.add_line("foo line".to_string());
+        app.add_line("bar line".to_string());
+
+        // Set a committed filter
+        app.filter_query = Some(FilterQuery {
+            segments: vec![plain(FilterCondition {
+                operator: FilterOp::Contains,
+                value: FilterValue::String("foo".to_string()),
+                regex: None,
+                json_key: None,
+            })],
+        });
+        app.filtered_indices_cache = None;
+
+        // Start typing a new filter query
+        app.filter_input = Some(r#"|= "bar""#.to_string());
+        app.update_live_filter();
+
+        // Render and check breadcrumb shows the live filter
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rendered = buffer_to_string(&buf);
+
+        assert!(
+            rendered.contains(r#"|= "bar""#),
+            "breadcrumb should show live filter query during input, got: {}",
+            rendered
+        );
+        assert!(
+            !rendered.contains(r#"|= "foo""#),
+            "breadcrumb should NOT show old committed filter during input, got: {}",
             rendered
         );
     }

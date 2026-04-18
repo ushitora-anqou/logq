@@ -568,8 +568,13 @@ fn test_filter_history_stored_on_enter() {
     t.render();
     assert!(t.screen_contains(r#"[filter: |= "hello"]"#));
 
-    // Press / again — previous query should be preset (history stored)
+    // Press / again — starts new filter input; breadcrumb should NOT show
+    // the old committed filter since live query is empty
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.render();
+    assert!(!t.screen_contains(r#"[filter:""#));
+    // History should be stored; pressing Up loads the previous query
+    t.press(KeyCode::Up, KeyModifiers::NONE);
     t.render();
     assert!(t.screen_contains(r#"|= "hello""#));
 }
