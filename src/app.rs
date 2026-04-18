@@ -1006,13 +1006,8 @@ impl App {
                 self.detail_scroll = 0;
             }
             (KeyCode::Char('/'), _) => {
-                let preset = self.filter_history.last().cloned().unwrap_or_default();
-                self.filter_input = Some(preset);
-                self.filter_history_index = if self.filter_history.is_empty() {
-                    None
-                } else {
-                    Some(self.filter_history.len() - 1)
-                };
+                self.filter_input = Some(String::new());
+                self.filter_history_index = None;
                 self.filter_draft = None;
                 self.history_search_active = false;
                 self.history_search_start = None;

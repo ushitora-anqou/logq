@@ -595,7 +595,7 @@ fn test_filter_history_no_duplicate() {
 }
 
 #[test]
-fn test_filter_preset_on_slash() {
+fn test_slash_starts_empty() {
     let mut t = TestApp::new(10000);
     t.add_line("hello world");
     t.render();
@@ -607,10 +607,13 @@ fn test_filter_preset_on_slash() {
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Press / again — should show previous query in status bar
+    // Press / again — should start with empty input
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    t.render();
-    assert!(t.screen_contains(r#"|= "hello""#));
+    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+
+    // Up arrow should load the previous query from history
+    t.press(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(t.app.filter_input.as_deref(), Some(r#"|= "hello""#));
 }
 
 #[test]
@@ -626,22 +629,25 @@ fn test_filter_history_up_down() {
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Apply second filter (appends to preset)
+    // Apply second filter (type full query from scratch)
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    // input is now |= "first" — append space + second condition
-    for c in r#" |= "second""#.chars() {
+    for c in r#"|= "first" |= "second""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Enter filter mode — presets last query
+    // Enter filter mode — starts with empty input
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+
+    // Up should show the last (combined) query
+    t.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(
         t.app.filter_input.as_deref(),
         Some(r#"|= "first" |= "second""#)
     );
 
-    // Up should show the first query
+    // Up again should show the first query
     t.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(t.app.filter_input.as_deref(), Some(r#"|= "first""#));
 
@@ -651,6 +657,44 @@ fn test_filter_history_up_down() {
         t.app.filter_input.as_deref(),
         Some(r#"|= "first" |= "second""#)
     );
+
+    // Down past end should restore empty draft
+    t.press(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+}
+
+#[test]
+fn test_empty_enter_clears_filter_then_slash_starts_empty() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello world");
+    t.add_line("foo bar");
+    t.render();
+
+    // Apply a filter
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in r#"|= "hello""#.chars() {
+        t.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    t.render();
+    assert!(t.screen_contains("[filter:"));
+
+    // Open filter, press Enter with empty input — should clear filter
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(t.app.filter_input.as_deref(), Some(""));
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(t.app.filter_input.is_none());
+    t.render();
+    assert!(!t.screen_contains("[filter:"));
+
+    // All lines should be visible now
+    t.render();
+    assert!(t.screen_contains("hello world"));
+    assert!(t.screen_contains("foo bar"));
+
+    // Press / again — should start with empty input
+    t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(t.app.filter_input.as_deref(), Some(""));
 }
 
 #[test]
