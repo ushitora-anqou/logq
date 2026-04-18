@@ -521,6 +521,7 @@ pub struct App {
     pub scroll_offset: usize,
     pub auto_scroll: bool,
     pub detail_scroll: u16,
+    pub detail_entry: Option<LogEntry>,
     pub filter_input: Option<String>,
     pub max_lines: usize,
     pub should_quit: bool,
@@ -547,6 +548,7 @@ impl App {
             auto_scroll: true,
 
             detail_scroll: 0,
+            detail_entry: None,
             filter_input: None,
             max_lines,
             should_quit: false,
@@ -1004,6 +1006,7 @@ impl App {
             (KeyCode::Enter, _) if !filtered.is_empty() => {
                 self.view_mode = ViewMode::Detail;
                 self.detail_scroll = 0;
+                self.detail_entry = Some(self.lines[self.selected].clone());
             }
             (KeyCode::Char('/'), _) => {
                 self.filter_input = Some(String::new());
@@ -1028,6 +1031,7 @@ impl App {
             }
             (KeyCode::Backspace, _) | (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
                 self.view_mode = ViewMode::List;
+                self.detail_entry = None;
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                 self.detail_scroll = self.detail_scroll.saturating_add(1);
@@ -1199,11 +1203,10 @@ impl App {
     }
 
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
-        if self.lines.is_empty() || self.selected >= self.lines.len() {
+        let Some(entry) = &self.detail_entry else {
             return;
-        }
-        let line = &self.lines[self.selected].text;
-        let text = highlight_line(line, &self.colors);
+        };
+        let text = highlight_line(&entry.text, &self.colors);
 
         let paragraph = Paragraph::new(text)
             .scroll((self.detail_scroll, 0))
@@ -2759,5 +2762,90 @@ mod tests {
             query.display_string(),
             r#"| (k1 = "foo" or k2 = "bar") and k3 = true"#
         );
+    }
+
+    // detail_entry preservation tests
+
+    #[test]
+    fn test_detail_entry_preserved_after_eviction() {
+        let mut app = App::new(3);
+        app.add_line("line-a".to_string());
+        app.add_line("line-b".to_string());
+        app.add_line("line-c".to_string());
+        app.selected = 1; // line-b
+
+        // Enter detail mode: snapshot line-b
+        app.detail_entry = Some(app.lines[app.selected].clone());
+        app.view_mode = ViewMode::Detail;
+
+        // Add more lines to trigger eviction of line-a, then line-b
+        app.add_line("line-d".to_string()); // evicts line-a
+        app.add_line("line-e".to_string()); // evicts line-b
+
+        // detail_entry should still hold line-b
+        assert_eq!(app.detail_entry.as_ref().unwrap().text, "line-b");
+    }
+
+    #[test]
+    fn test_detail_entry_cleared_on_back_to_list() {
+        let mut app = App::new(100);
+        app.add_line("line-a".to_string());
+        app.selected = 0;
+        app.detail_entry = Some(app.lines[0].clone());
+        app.view_mode = ViewMode::Detail;
+
+        // Exit detail mode
+        app.view_mode = ViewMode::List;
+        app.detail_entry = None;
+
+        assert!(app.detail_entry.is_none());
+    }
+
+    #[test]
+    fn test_render_detail_shows_preserved_entry() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new(2);
+        app.add_line("preserved-text".to_string());
+        app.selected = 0;
+        app.detail_entry = Some(app.lines[0].clone());
+        app.view_mode = ViewMode::Detail;
+
+        // Evict the line from self.lines
+        app.add_line("new-line-1".to_string()); // lines = ["preserved-text", "new-line-1"]
+        app.add_line("new-line-2".to_string()); // evicts "preserved-text"
+        assert!(!app.lines.iter().any(|e| e.text == "preserved-text"));
+
+        // render_detail should still show "preserved-text"
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rendered = buffer_to_string(&buf);
+
+        assert!(
+            rendered.contains("preserved-text"),
+            "detail view should show preserved entry text, got: {}",
+            rendered
+        );
+    }
+
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push(
+                    buf.cell((x, y))
+                        .unwrap()
+                        .symbol()
+                        .chars()
+                        .next()
+                        .unwrap_or(' '),
+                );
+            }
+            s.push('\n');
+        }
+        s
     }
 }
