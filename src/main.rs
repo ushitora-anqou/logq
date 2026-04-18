@@ -105,13 +105,17 @@ fn run_app(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     _child: &mut Option<tokio::process::Child>,
 ) -> io::Result<()> {
+    // Initial render
+    terminal.draw(|frame| app.render(frame))?;
+
     loop {
+        let mut needs_render = false;
+
         // Receive new lines (non-blocking)
         while let Ok(line) = rx.try_recv() {
             app.add_line(line);
+            needs_render = true;
         }
-
-        terminal.draw(|frame| app.render(frame))?;
 
         if app.should_quit {
             return Ok(());
@@ -122,6 +126,11 @@ fn run_app(
             let event = app.next_event()?;
             let area = terminal.get_frame().area();
             app.handle_event(event, area);
+            needs_render = true;
+        }
+
+        if needs_render {
+            terminal.draw(|frame| app.render(frame))?;
         }
     }
 }
