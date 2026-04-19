@@ -1144,7 +1144,7 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let (row1, row2, num_cols, key_width) = self.shortcut_items();
+        let (row1, row2, num_cols, key_widths) = self.shortcut_items();
 
         if self.filter_input.is_some() {
             // Filter input mode: titlebar + content + input + status + shortcuts
@@ -1167,8 +1167,8 @@ impl App {
             }
             self.render_input_line(frame, chunks[2]);
             self.render_status_line(frame, chunks[3]);
-            self.render_shortcut_bar(frame, chunks[4], &row1, num_cols, key_width);
-            self.render_shortcut_bar(frame, chunks[5], &row2, num_cols, key_width);
+            self.render_shortcut_bar(frame, chunks[4], &row1, num_cols, &key_widths);
+            self.render_shortcut_bar(frame, chunks[5], &row2, num_cols, &key_widths);
 
             let cursor_x = if let Some(pattern) = &self.history_search_pattern {
                 let prefix_len = if self.history_search_failed {
@@ -1201,8 +1201,8 @@ impl App {
                 ViewMode::Detail => self.render_detail(frame, chunks[1]),
             }
             self.render_status_line(frame, chunks[2]);
-            self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, key_width);
-            self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, key_width);
+            self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, &key_widths);
+            self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, &key_widths);
         }
     }
 
@@ -1405,7 +1405,7 @@ impl App {
         area: Rect,
         items: &[ShortcutItem],
         num_cols: usize,
-        key_width: usize,
+        key_widths: &[usize; 8],
     ) {
         let width = area.width as usize;
 
@@ -1416,21 +1416,24 @@ impl App {
         }
 
         let col_width = width / num_cols;
-        // Cap key_width so descriptions get at least some space
-        let effective_key_width = key_width.min(col_width.saturating_sub(3));
         let mut spans: Vec<Span<'static>> = Vec::new();
-        let mut rendered_cols = 0;
+        let mut col_idx = 0;
 
-        for item in items {
+        for (i, item) in items.iter().enumerate() {
             if item.key.is_empty() {
-                continue;
+                // Fill remaining columns with spaces
+                let remaining_cols = num_cols.saturating_sub(col_idx);
+                if remaining_cols > 0 {
+                    spans.push(Span::raw(" ".repeat(col_width * remaining_cols)));
+                    col_idx = num_cols;
+                }
+                break;
             }
 
-            let available = col_width;
-            // Pad key to effective_key_width so descriptions align across rows
-            let key_padded = format!("{:width$}", item.key, width = effective_key_width);
-            let space_len = 1; // space between key area and desc
-            let desc_available = available.saturating_sub(effective_key_width + space_len);
+            let kw = key_widths[i].min(col_width.saturating_sub(2));
+            let key_padded = format!("{:width$}", item.key, width = kw);
+            // Reserve: key + 1 space + at least 1 padding space
+            let desc_available = col_width.saturating_sub(kw + 2);
             let desc_text = if desc_available > 0 {
                 if item.desc.len() > desc_available {
                     &item.desc[..desc_available]
@@ -1440,29 +1443,27 @@ impl App {
             } else {
                 ""
             };
-
-            let padding = available
-                .saturating_sub(effective_key_width)
-                .saturating_sub(space_len)
+            let padding = col_width
+                .saturating_sub(kw + 1)
                 .saturating_sub(desc_text.len());
 
-            // Key part: reverse video (no background), padded to effective_key_width
+            // Key part: reverse video
             spans.push(Span::styled(
                 key_padded,
                 Style::default().add_modifier(Modifier::REVERSED),
             ));
-            // Space + description
+            // Space + description + padding
             spans.push(Span::raw(format!(
                 "{}{}{}",
-                " ".repeat(space_len),
+                " ",
                 desc_text,
                 " ".repeat(padding)
             )));
-            rendered_cols += 1;
+            col_idx += 1;
         }
 
-        // Fill remaining columns with spaces
-        let remaining_cols = num_cols.saturating_sub(rendered_cols);
+        // Fill remaining columns with spaces (if loop didn't cover all)
+        let remaining_cols = num_cols.saturating_sub(col_idx);
         if remaining_cols > 0 {
             spans.push(Span::raw(" ".repeat(col_width * remaining_cols)));
         }
@@ -1477,11 +1478,11 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, usize) {
-        // Returns (row1, row2, num_cols, key_width) where:
+    fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
+        // Returns (row1, row2, num_cols, key_widths) where:
         // - num_cols is shared column count for alignment across both rows
-        // - key_width is the max key length across both rows, used to pad keys so descriptions align
-        match self.view_mode {
+        // - key_widths[i] is the max key length between row1[i] and row2[i], used to pad keys
+        let (row1, row2, num_cols) = match self.view_mode {
             ViewMode::List if self.filter_input.is_some() => {
                 if self.history_search_pattern.is_some() {
                     (
@@ -1521,7 +1522,6 @@ impl App {
                             ShortcutItem { key: "", desc: "" },
                         ],
                         8,
-                        5,
                     )
                 } else {
                     (
@@ -1564,7 +1564,6 @@ impl App {
                             ShortcutItem { key: "", desc: "" },
                         ],
                         8,
-                        5,
                     )
                 }
             }
@@ -1629,7 +1628,6 @@ impl App {
                     ShortcutItem { key: "", desc: "" },
                 ],
                 8,
-                5,
             ),
             ViewMode::Detail => (
                 [
@@ -1683,9 +1681,14 @@ impl App {
                     ShortcutItem { key: "", desc: "" },
                 ],
                 8,
-                2,
             ),
-        }
+        };
+
+        // Compute per-column key widths: max key length between row1 and row2 for each column
+        let key_widths: [usize; 8] =
+            std::array::from_fn(|i| row1[i].key.len().max(row2[i].key.len()));
+
+        (row1, row2, num_cols, key_widths)
     }
 
     pub fn poll_events(&self) -> std::io::Result<bool> {
