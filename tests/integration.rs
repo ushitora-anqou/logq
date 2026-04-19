@@ -16,7 +16,11 @@ struct TestApp {
 
 impl TestApp {
     fn new(max_lines: usize) -> Self {
-        let backend = TestBackend::new(WIDTH, HEIGHT);
+        Self::new_with_size(max_lines, WIDTH, HEIGHT)
+    }
+
+    fn new_with_size(max_lines: usize, width: u16, height: u16) -> Self {
+        let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).unwrap();
         let app = App::new(max_lines);
         Self { app, terminal }
@@ -424,7 +428,7 @@ fn test_filter_esc_cancels() {
 
 #[test]
 fn test_filter_help_text_visible() {
-    let mut t = TestApp::new(10000);
+    let mut t = TestApp::new_with_size(10000, 200, 24);
     t.add_line("hello");
     t.render();
 

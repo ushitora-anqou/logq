@@ -1520,7 +1520,7 @@ impl App {
                             ShortcutItem { key: "", desc: "" },
                             ShortcutItem { key: "", desc: "" },
                         ],
-                        4,
+                        8,
                         5,
                     )
                 } else {
@@ -1563,7 +1563,7 @@ impl App {
                             ShortcutItem { key: "", desc: "" },
                             ShortcutItem { key: "", desc: "" },
                         ],
-                        4,
+                        8,
                         5,
                     )
                 }
@@ -1628,7 +1628,7 @@ impl App {
                     ShortcutItem { key: "", desc: "" },
                     ShortcutItem { key: "", desc: "" },
                 ],
-                7,
+                8,
                 5,
             ),
             ViewMode::Detail => (
@@ -1682,7 +1682,7 @@ impl App {
                     ShortcutItem { key: "", desc: "" },
                     ShortcutItem { key: "", desc: "" },
                 ],
-                6,
+                8,
                 2,
             ),
         }
