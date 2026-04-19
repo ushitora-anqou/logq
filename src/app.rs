@@ -726,11 +726,15 @@ impl App {
     }
 
     fn ensure_selection_visible(&mut self, visible_height: usize) {
-        if self.scroll_offset > self.selected {
-            self.scroll_offset = self.selected;
+        let filtered = self.filtered_indices();
+        let Some(selected_pos) = filtered.iter().position(|&i| i == self.selected) else {
+            return;
+        };
+        if self.scroll_offset > selected_pos {
+            self.scroll_offset = selected_pos;
         }
-        if self.selected >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.selected - visible_height + 1;
+        if selected_pos >= self.scroll_offset + visible_height {
+            self.scroll_offset = selected_pos - visible_height + 1;
         }
     }
 
@@ -2032,11 +2036,55 @@ mod tests {
     #[test]
     fn test_ensure_selection_visible() {
         let mut app = App::new(100);
+        for i in 0..30 {
+            app.add_line(format!("line{}", i));
+        }
         app.selected = 20;
         app.scroll_offset = 0;
         app.ensure_selection_visible(10);
         assert!(app.selected >= app.scroll_offset);
         assert!(app.selected < app.scroll_offset + 10);
+    }
+
+    #[test]
+    fn test_move_selection_up_scrolls_with_filter() {
+        let mut app = App::new(100);
+        for i in 0..20 {
+            if i % 2 == 0 {
+                app.add_line(format!("match line{}", i));
+            } else {
+                app.add_line(format!("other line{}", i));
+            }
+        }
+        // Filter for "match": matches lines 0, 2, 4, 6, 8, 10, 12, 14, 16, 18
+        app.filter_query = Some(FilterQuery {
+            segments: vec![plain(FilterCondition {
+                operator: FilterOp::Contains,
+                value: FilterValue::String("match".to_string()),
+                regex: None,
+                json_key: None,
+            })],
+        });
+        // filtered = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+
+        let visible_height = 5;
+
+        // Start at the bottom
+        app.update_auto_scroll(visible_height);
+        assert_eq!(app.selected, 18);
+        assert_eq!(app.scroll_offset, 5);
+
+        // Move up until we reach the top of the visible area
+        for _ in 0..5 {
+            app.move_selection(-1, visible_height);
+        }
+        assert_eq!(app.selected, 8); // filtered[4]
+        // scroll_offset should have adjusted to keep selected visible
+        assert!(
+            app.scroll_offset <= 4,
+            "scroll_offset should be <= 4 so filtered[4]=line8 is visible, got {}",
+            app.scroll_offset
+        );
     }
 
     #[test]
