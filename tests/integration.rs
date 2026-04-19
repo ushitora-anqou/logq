@@ -382,7 +382,8 @@ fn test_filter_backspace_empty_stays_in_mode() {
 
     // Status bar should show normal list mode help, not filter input
     t.render();
-    assert!(t.screen_contains("j/k nav"));
+    // List mode shortcuts should be visible (not filter input shortcuts)
+    assert!(t.screen_contains("Exit"));
 }
 
 #[test]
@@ -431,9 +432,9 @@ fn test_filter_help_text_visible() {
     t.render();
 
     // Status bar should show filter input help
-    assert!(t.screen_contains("Enter:apply"));
-    assert!(t.screen_contains("C-r:search"));
-    assert!(t.screen_contains("Esc:cancel"));
+    assert!(t.screen_contains("Apply filter"));
+    assert!(t.screen_contains("Search hist"));
+    assert!(t.screen_contains("Cancel"));
 }
 
 #[test]

@@ -15,6 +15,11 @@ use crate::highlight::{HighlightColors, highlight_line};
 
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
 
+struct ShortcutItem {
+    key: &'static str,
+    desc: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ViewMode {
     List,
@@ -715,8 +720,8 @@ impl App {
     }
 
     fn visible_height(&self, area: &Rect) -> usize {
-        // Breadcrumb(1) + help(2) = 3; during filter input add input(1) = 4
-        let overhead: usize = if self.filter_input.is_some() { 4 } else { 3 };
+        // Titlebar(1) + status(1) + shortcuts(2) = 4; during filter input add input(1) = 5
+        let overhead: usize = if self.filter_input.is_some() { 5 } else { 4 };
         (area.height as usize).saturating_sub(overhead)
     }
 
@@ -1139,9 +1144,10 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        let (row1, row2, num_cols, key_width) = self.shortcut_items();
 
         if self.filter_input.is_some() {
-            // Filter input mode: breadcrumb + content + input + help1 + help2
+            // Filter input mode: titlebar + content + input + status + shortcuts
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -1150,17 +1156,19 @@ impl App {
                     Constraint::Length(1),
                     Constraint::Length(1),
                     Constraint::Length(1),
+                    Constraint::Length(1),
                 ])
                 .split(area);
 
-            self.render_breadcrumb(frame, chunks[0]);
+            self.render_titlebar(frame, chunks[0]);
             match self.view_mode {
                 ViewMode::List => self.render_list(frame, chunks[1]),
                 ViewMode::Detail => self.render_detail(frame, chunks[1]),
             }
             self.render_input_line(frame, chunks[2]);
-            self.render_help_line1(frame, chunks[3]);
-            self.render_help_line2(frame, chunks[4]);
+            self.render_status_line(frame, chunks[3]);
+            self.render_shortcut_bar(frame, chunks[4], &row1, num_cols, key_width);
+            self.render_shortcut_bar(frame, chunks[5], &row2, num_cols, key_width);
 
             let cursor_x = if let Some(pattern) = &self.history_search_pattern {
                 let prefix_len = if self.history_search_failed {
@@ -1175,7 +1183,7 @@ impl App {
             };
             frame.set_cursor_position((cursor_x, chunks[2].y));
         } else {
-            // Normal mode: breadcrumb + content + help1 + help2
+            // Normal mode: titlebar + content + status + shortcuts
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -1183,36 +1191,73 @@ impl App {
                     Constraint::Min(0),
                     Constraint::Length(1),
                     Constraint::Length(1),
+                    Constraint::Length(1),
                 ])
                 .split(area);
 
-            self.render_breadcrumb(frame, chunks[0]);
+            self.render_titlebar(frame, chunks[0]);
             match self.view_mode {
                 ViewMode::List => self.render_list(frame, chunks[1]),
                 ViewMode::Detail => self.render_detail(frame, chunks[1]),
             }
-            self.render_help_line1(frame, chunks[2]);
-            self.render_help_line2(frame, chunks[3]);
+            self.render_status_line(frame, chunks[2]);
+            self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, key_width);
+            self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, key_width);
         }
     }
 
-    fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
-        let mut parts = Vec::new();
+    fn render_titlebar(&self, frame: &mut Frame, area: Rect) {
+        let width = area.width as usize;
+        let reversed = Style::default()
+            .fg(Color::White)
+            .bg(Color::Black)
+            .add_modifier(Modifier::REVERSED);
+
+        // Build center text
+        let mut center_parts = Vec::new();
         if let Some(q) = self.active_filter_query() {
-            parts.push(format!("[filter: {}]", q.display_string()));
+            center_parts.push(format!("[filter: {}]", q.display_string()));
         }
         if self.view_mode == ViewMode::Detail {
-            parts.push("[detail]".to_string());
+            center_parts.push("[detail]".to_string());
         }
-        if parts.is_empty() {
-            return;
+        let center_text = center_parts.join(" > ");
+
+        // Layout: "logq" on left, centered status, padding to fill width
+        let left = "logq";
+        let left_len = left.len();
+        let center_len = center_text.len();
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(left.to_string(), reversed));
+
+        // Calculate padding to center the status text
+        let remaining = width.saturating_sub(left_len).saturating_sub(center_len);
+        let pad_left = remaining / 2;
+        let pad_right = remaining - pad_left;
+
+        if !center_text.is_empty() {
+            spans.push(Span::styled(" ".repeat(pad_left), reversed));
+            spans.push(Span::styled(center_text, reversed));
+            spans.push(Span::styled(" ".repeat(pad_right), reversed));
+        } else {
+            spans.push(Span::styled(
+                " ".repeat(width.saturating_sub(left_len)),
+                reversed,
+            ));
         }
-        let text = parts.join(" > ");
-        let breadcrumb = Paragraph::new(Line::from(vec![Span::styled(
-            text,
-            Style::default().fg(Color::Cyan).bg(Color::DarkGray),
-        )]));
-        frame.render_widget(breadcrumb, area);
+
+        // Ensure we fill the width exactly
+        let total_len: usize = spans.iter().map(|s| s.content.len()).sum();
+        if total_len < width {
+            spans.push(Span::styled(
+                " ".repeat(width.saturating_sub(total_len)),
+                reversed,
+            ));
+        }
+
+        let paragraph = Paragraph::new(Line::from(spans));
+        frame.render_widget(paragraph, area);
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect) {
@@ -1323,17 +1368,6 @@ impl App {
             )]
         };
 
-        let error = self
-            .live_filter_error
-            .as_deref()
-            .or(self.filter_error.as_deref());
-        if let Some(err) = error {
-            s.push(Span::styled(
-                format!("  Error: {}", err),
-                Style::default().fg(Color::Red).bg(Color::DarkGray),
-            ));
-        }
-
         let left_len: usize = s.iter().map(|sp| sp.content.len()).sum();
         let padding = width.saturating_sub(left_len);
         if padding > 0 {
@@ -1344,52 +1378,314 @@ impl App {
         frame.render_widget(status, area);
     }
 
-    fn render_help_line1(&self, frame: &mut Frame, area: Rect) {
-        let text = match self.view_mode {
-            ViewMode::List if self.filter_input.is_some() => {
-                if self.history_search_pattern.is_some() {
-                    " C-r:next  C-g:cancel  Enter:apply  Esc:accept"
-                } else {
-                    " Enter:apply  ↑↓:history  C-r:search  Esc:cancel"
-                }
-            }
-            ViewMode::List => {
-                return self.render_help_spans(
-                    frame,
-                    area,
-                    " j/k nav  Enter detail  / filter  G latest  Esc clear",
-                );
-            }
-            ViewMode::Detail => " q/Bksp/Esc back  j/k scroll",
-        };
-
-        self.render_help_spans(frame, area, text);
-    }
-
-    fn render_help_line2(&self, frame: &mut Frame, area: Rect) {
-        let text = match self.view_mode {
-            ViewMode::List if self.filter_input.is_some() => {
-                " Bksp delete  C-c:cancel  syntax: |= \"text\"  |~ /regex/  != !~  | key = !=  and/or ()"
-            }
-            ViewMode::List | ViewMode::Detail => " C-d/u half  C-f/b full  C-e/y line  C-x quit",
-        };
-
-        self.render_help_spans(frame, area, text);
-    }
-
-    fn render_help_spans(&self, frame: &mut Frame, area: Rect, text: &str) {
-        let bg = Style::default().bg(Color::DarkGray);
+    fn render_status_line(&self, frame: &mut Frame, area: Rect) {
         let width = area.width as usize;
-        let padding = width.saturating_sub(text.len());
-        let spans = vec![
-            Span::styled(
-                text.to_string(),
-                Style::default().fg(Color::White).bg(Color::DarkGray),
-            ),
-            Span::styled(" ".repeat(padding), bg),
-        ];
+
+        let error = self
+            .live_filter_error
+            .as_deref()
+            .or(self.filter_error.as_deref());
+
+        let spans = if let Some(err) = error {
+            vec![
+                Span::styled(format!(" Error: {}", err), Style::default().fg(Color::Red)),
+                Span::raw(" ".repeat(width.saturating_sub(err.len() + 9))),
+            ]
+        } else {
+            vec![Span::raw(" ".repeat(width))]
+        };
+
         let paragraph = Paragraph::new(Line::from(spans));
         frame.render_widget(paragraph, area);
+    }
+
+    fn render_shortcut_bar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        items: &[ShortcutItem],
+        num_cols: usize,
+        key_width: usize,
+    ) {
+        let width = area.width as usize;
+
+        if num_cols == 0 {
+            let paragraph = Paragraph::new(Line::from(Span::raw(" ".repeat(width))));
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        let col_width = width / num_cols;
+        // Cap key_width so descriptions get at least some space
+        let effective_key_width = key_width.min(col_width.saturating_sub(3));
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut rendered_cols = 0;
+
+        for item in items {
+            if item.key.is_empty() {
+                continue;
+            }
+
+            let available = col_width;
+            // Pad key to effective_key_width so descriptions align across rows
+            let key_padded = format!("{:width$}", item.key, width = effective_key_width);
+            let space_len = 1; // space between key area and desc
+            let desc_available = available.saturating_sub(effective_key_width + space_len);
+            let desc_text = if desc_available > 0 {
+                if item.desc.len() > desc_available {
+                    &item.desc[..desc_available]
+                } else {
+                    item.desc
+                }
+            } else {
+                ""
+            };
+
+            let padding = available
+                .saturating_sub(effective_key_width)
+                .saturating_sub(space_len)
+                .saturating_sub(desc_text.len());
+
+            // Key part: reverse video (no background), padded to effective_key_width
+            spans.push(Span::styled(
+                key_padded,
+                Style::default().add_modifier(Modifier::REVERSED),
+            ));
+            // Space + description
+            spans.push(Span::raw(format!(
+                "{}{}{}",
+                " ".repeat(space_len),
+                desc_text,
+                " ".repeat(padding)
+            )));
+            rendered_cols += 1;
+        }
+
+        // Fill remaining columns with spaces
+        let remaining_cols = num_cols.saturating_sub(rendered_cols);
+        if remaining_cols > 0 {
+            spans.push(Span::raw(" ".repeat(col_width * remaining_cols)));
+        }
+
+        // Ensure we fill the entire width
+        let total_len: usize = spans.iter().map(|s| s.content.len()).sum();
+        if total_len < width {
+            spans.push(Span::raw(" ".repeat(width - total_len)));
+        }
+
+        let paragraph = Paragraph::new(Line::from(spans));
+        frame.render_widget(paragraph, area);
+    }
+
+    fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, usize) {
+        // Returns (row1, row2, num_cols, key_width) where:
+        // - num_cols is shared column count for alignment across both rows
+        // - key_width is the max key length across both rows, used to pad keys so descriptions align
+        match self.view_mode {
+            ViewMode::List if self.filter_input.is_some() => {
+                if self.history_search_pattern.is_some() {
+                    (
+                        [
+                            ShortcutItem {
+                                key: "^R",
+                                desc: "Next match",
+                            },
+                            ShortcutItem {
+                                key: "^G",
+                                desc: "Cancel search",
+                            },
+                            ShortcutItem {
+                                key: "Enter",
+                                desc: "Apply filter",
+                            },
+                            ShortcutItem {
+                                key: "Esc",
+                                desc: "Accept match",
+                            },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                        ],
+                        [
+                            ShortcutItem {
+                                key: "Bksp",
+                                desc: "Delete char",
+                            },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                        ],
+                        4,
+                        5,
+                    )
+                } else {
+                    (
+                        [
+                            ShortcutItem {
+                                key: "Enter",
+                                desc: "Apply filter",
+                            },
+                            ShortcutItem {
+                                key: "Up/Dn",
+                                desc: "History",
+                            },
+                            ShortcutItem {
+                                key: "^R",
+                                desc: "Search hist",
+                            },
+                            ShortcutItem {
+                                key: "Esc",
+                                desc: "Cancel",
+                            },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                        ],
+                        [
+                            ShortcutItem {
+                                key: "Bksp",
+                                desc: "Delete char",
+                            },
+                            ShortcutItem {
+                                key: "^C",
+                                desc: "Cancel",
+                            },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                            ShortcutItem { key: "", desc: "" },
+                        ],
+                        4,
+                        5,
+                    )
+                }
+            }
+            ViewMode::List => (
+                [
+                    ShortcutItem {
+                        key: "j",
+                        desc: "Move down",
+                    },
+                    ShortcutItem {
+                        key: "k",
+                        desc: "Move up",
+                    },
+                    ShortcutItem {
+                        key: "Enter",
+                        desc: "Open detail",
+                    },
+                    ShortcutItem {
+                        key: "/",
+                        desc: "Filter lines",
+                    },
+                    ShortcutItem {
+                        key: "G",
+                        desc: "Jump to end",
+                    },
+                    ShortcutItem {
+                        key: "Esc",
+                        desc: "Clear filter",
+                    },
+                    ShortcutItem {
+                        key: "^X",
+                        desc: "Exit logq",
+                    },
+                    ShortcutItem { key: "", desc: "" },
+                ],
+                [
+                    ShortcutItem {
+                        key: "^D",
+                        desc: "Half pg dn",
+                    },
+                    ShortcutItem {
+                        key: "^U",
+                        desc: "Half pg up",
+                    },
+                    ShortcutItem {
+                        key: "^F",
+                        desc: "Full pg dn",
+                    },
+                    ShortcutItem {
+                        key: "^B",
+                        desc: "Full pg up",
+                    },
+                    ShortcutItem {
+                        key: "^E",
+                        desc: "One line dn",
+                    },
+                    ShortcutItem {
+                        key: "^Y",
+                        desc: "One line up",
+                    },
+                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem { key: "", desc: "" },
+                ],
+                7,
+                5,
+            ),
+            ViewMode::Detail => (
+                [
+                    ShortcutItem {
+                        key: "q",
+                        desc: "Back to list",
+                    },
+                    ShortcutItem {
+                        key: "j",
+                        desc: "Scroll down",
+                    },
+                    ShortcutItem {
+                        key: "k",
+                        desc: "Scroll up",
+                    },
+                    ShortcutItem {
+                        key: "^X",
+                        desc: "Exit logq",
+                    },
+                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem { key: "", desc: "" },
+                ],
+                [
+                    ShortcutItem {
+                        key: "^D",
+                        desc: "Half pg dn",
+                    },
+                    ShortcutItem {
+                        key: "^U",
+                        desc: "Half pg up",
+                    },
+                    ShortcutItem {
+                        key: "^F",
+                        desc: "Full pg dn",
+                    },
+                    ShortcutItem {
+                        key: "^B",
+                        desc: "Full pg up",
+                    },
+                    ShortcutItem {
+                        key: "^E",
+                        desc: "One line dn",
+                    },
+                    ShortcutItem {
+                        key: "^Y",
+                        desc: "One line up",
+                    },
+                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem { key: "", desc: "" },
+                ],
+                6,
+                2,
+            ),
+        }
     }
 
     pub fn poll_events(&self) -> std::io::Result<bool> {
