@@ -48,6 +48,7 @@ logq -- command arg1 arg2 ...
 | `/`           | Start filter input              |
 | `Esc`         | Clear active filter             |
 | `G`           | Jump to latest line (resume auto-scroll) |
+| `gg`          | Jump to first line              |
 | `C-d`         | Scroll down half page           |
 | `C-u`         | Scroll up half page             |
 | `C-f`         | Scroll down full page           |

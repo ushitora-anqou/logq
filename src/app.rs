@@ -543,6 +543,7 @@ pub struct App {
     history_search_failed: bool,
     history_search_start: Option<usize>,
     filtered_indices_cache: Option<Vec<usize>>,
+    pending_g: bool,
 }
 
 impl App {
@@ -573,6 +574,7 @@ impl App {
             history_search_failed: false,
             history_search_start: None,
             filtered_indices_cache: None,
+            pending_g: false,
         }
     }
 
@@ -752,6 +754,26 @@ impl App {
         self.selected = filtered[new_pos];
         self.auto_scroll = self.selected == filtered[filtered.len() - 1];
         self.ensure_selection_visible(visible_height);
+    }
+
+    fn page_move(&mut self, delta: isize, visible_height: usize, forward: bool) {
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        let current_pos = filtered
+            .iter()
+            .position(|&i| i == self.selected)
+            .unwrap_or(0);
+        let new_pos =
+            (current_pos as isize + delta).clamp(0, (filtered.len() as isize) - 1) as usize;
+        self.selected = filtered[new_pos];
+        self.auto_scroll = false;
+        if forward {
+            self.scroll_offset = new_pos;
+        } else {
+            self.scroll_offset = new_pos.saturating_sub(visible_height.saturating_sub(1));
+        }
     }
 
     pub fn handle_event(&mut self, event: Event, area: Rect) {
@@ -1053,42 +1075,63 @@ impl App {
                 self.handle_ctrl_x();
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+                self.pending_g = false;
                 self.move_selection(1, visible_height);
             }
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+                self.pending_g = false;
                 self.move_selection(-1, visible_height);
             }
             (KeyCode::Char('G'), _) if !filtered.is_empty() => {
+                self.pending_g = false;
                 self.selected = filtered[max_idx];
                 self.auto_scroll = true;
                 self.ensure_selection_visible(visible_height);
             }
+            (KeyCode::Char('g'), _) if !filtered.is_empty() => {
+                if self.pending_g {
+                    self.selected = filtered[0];
+                    self.auto_scroll = false;
+                    self.scroll_offset = 0;
+                    self.pending_g = false;
+                } else {
+                    self.pending_g = true;
+                }
+            }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                self.pending_g = false;
                 let half = (visible_height / 2).max(1);
-                self.move_selection(half as isize, visible_height);
+                self.page_move(half as isize, visible_height, true);
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.pending_g = false;
                 let half = (visible_height / 2).max(1);
-                self.move_selection(-(half as isize), visible_height);
+                self.page_move(-(half as isize), visible_height, false);
             }
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                self.move_selection(visible_height as isize, visible_height);
+                self.pending_g = false;
+                self.page_move(visible_height as isize, visible_height, true);
             }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                self.move_selection(-(visible_height as isize), visible_height);
+                self.pending_g = false;
+                self.page_move(-(visible_height as isize), visible_height, false);
             }
             (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+                self.pending_g = false;
                 self.move_selection(1, visible_height);
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                self.pending_g = false;
                 self.move_selection(-1, visible_height);
             }
             (KeyCode::Enter, _) if !filtered.is_empty() => {
+                self.pending_g = false;
                 self.view_mode = ViewMode::Detail;
                 self.detail_scroll = 0;
                 self.detail_entry = Some(self.lines[self.selected].clone());
             }
             (KeyCode::Char('/'), _) => {
+                self.pending_g = false;
                 self.filter_input = Some(tui_input::Input::default());
                 self.filter_history_index = None;
                 self.filter_draft = None;
@@ -1096,10 +1139,13 @@ impl App {
                 self.update_live_filter();
             }
             (KeyCode::Esc, _) => {
+                self.pending_g = false;
                 self.filter_query = None;
                 self.filtered_indices_cache = None;
             }
-            _ => {}
+            _ => {
+                self.pending_g = false;
+            }
         }
     }
 
@@ -1601,12 +1647,15 @@ impl App {
                         key: "^X",
                         desc: "Exit logq",
                     },
-                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem {
+                        key: "gg",
+                        desc: "Jump to top",
+                    },
                 ],
                 [
                     ShortcutItem {
                         key: "^D",
-                        desc: "Half pg dn",
+                        desc: "Half pg down",
                     },
                     ShortcutItem {
                         key: "^U",
@@ -1614,7 +1663,7 @@ impl App {
                     },
                     ShortcutItem {
                         key: "^F",
-                        desc: "Full pg dn",
+                        desc: "Full pg down",
                     },
                     ShortcutItem {
                         key: "^B",
@@ -1622,7 +1671,7 @@ impl App {
                     },
                     ShortcutItem {
                         key: "^E",
-                        desc: "One line dn",
+                        desc: "One line down",
                     },
                     ShortcutItem {
                         key: "^Y",
@@ -1659,7 +1708,7 @@ impl App {
                 [
                     ShortcutItem {
                         key: "^D",
-                        desc: "Half pg dn",
+                        desc: "Half pg down",
                     },
                     ShortcutItem {
                         key: "^U",
@@ -1667,7 +1716,7 @@ impl App {
                     },
                     ShortcutItem {
                         key: "^F",
-                        desc: "Full pg dn",
+                        desc: "Full pg down",
                     },
                     ShortcutItem {
                         key: "^B",
@@ -1675,7 +1724,7 @@ impl App {
                     },
                     ShortcutItem {
                         key: "^E",
-                        desc: "One line dn",
+                        desc: "One line down",
                     },
                     ShortcutItem {
                         key: "^Y",
@@ -3335,5 +3384,162 @@ mod tests {
             s.push('\n');
         }
         s
+    }
+
+    #[test]
+    fn test_gg_jumps_to_first_line() {
+        let mut app = App::new(100);
+        for i in 0..20 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 15;
+        app.scroll_offset = 10;
+        app.auto_scroll = false;
+
+        // First 'g' press: pending_g becomes true
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        assert!(app.pending_g);
+        assert_eq!(app.selected, 15); // no movement yet
+
+        // Second 'g' press: jumps to first line
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        assert!(!app.pending_g);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.scroll_offset, 0);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_pending_g_resets_on_other_key() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 5;
+
+        // First 'g' press
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        assert!(app.pending_g);
+
+        // Press 'j': should reset pending_g and move normally
+        app.handle_list_key(KeyCode::Char('j'), KeyModifiers::NONE, 10);
+        assert!(!app.pending_g);
+        assert_eq!(app.selected, 6); // moved by 1, not jumped to first
+    }
+
+    #[test]
+    fn test_pending_g_resets_on_unknown_key() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 5;
+
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        assert!(app.pending_g);
+
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10);
+        assert!(!app.pending_g);
+        assert_eq!(app.selected, 5); // no movement
+    }
+
+    #[test]
+    fn test_page_move_forward_sets_cursor_at_top() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 0;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+
+        // C-f: move forward by visible_height (10)
+        app.page_move(10, 10, true);
+
+        assert_eq!(app.selected, 10);
+        assert_eq!(app.scroll_offset, 10); // cursor at top of screen
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_page_move_backward_sets_cursor_at_bottom() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 20;
+        app.scroll_offset = 10;
+        app.auto_scroll = false;
+
+        // C-b: move backward by visible_height (10)
+        app.page_move(-10, 10, false);
+
+        assert_eq!(app.selected, 10);
+        // cursor at bottom of screen: scroll_offset = new_pos - (visible_height - 1)
+        assert_eq!(app.scroll_offset, 1);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_page_move_half_forward() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 0;
+        app.scroll_offset = 0;
+
+        // C-d: move forward by half (5) with visible_height=10
+        app.page_move(5, 10, true);
+
+        assert_eq!(app.selected, 5);
+        assert_eq!(app.scroll_offset, 5); // cursor at top
+    }
+
+    #[test]
+    fn test_page_move_half_backward() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 20;
+        app.scroll_offset = 10;
+
+        // C-u: move backward by half (5) with visible_height=10
+        app.page_move(-5, 10, false);
+
+        assert_eq!(app.selected, 15);
+        // cursor at bottom: scroll_offset = 15 - (10 - 1) = 6
+        assert_eq!(app.scroll_offset, 6);
+    }
+
+    #[test]
+    fn test_page_move_clamps_at_boundaries() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 0;
+        app.scroll_offset = 0;
+
+        // C-b from the top: should clamp at 0
+        app.page_move(-10, 10, false);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_page_move_forward_clamps_at_end() {
+        let mut app = App::new(100);
+        for i in 0..15 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 12;
+        app.scroll_offset = 5;
+
+        // C-f near end: should clamp at last line
+        app.page_move(10, 10, true);
+        assert_eq!(app.selected, 14); // last line
+        assert_eq!(app.scroll_offset, 14); // cursor at top
     }
 }
