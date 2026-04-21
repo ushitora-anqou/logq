@@ -12,8 +12,11 @@ use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::Value;
 
 use crate::highlight::{HighlightColors, highlight_line};
+use crate::input::LineSource;
 
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
+const STDERR_PREFIX: &str = "[stderr] ";
+const SYSTEM_PREFIX: &str = "[logq] ";
 
 struct ShortcutItem {
     key: &'static str,
@@ -30,6 +33,7 @@ pub enum ViewMode {
 pub struct LogEntry {
     pub text: String,
     pub timestamp: String, // "HH:MM:SS.mmm"
+    pub source: LineSource,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -600,10 +604,15 @@ impl App {
     }
 
     pub fn add_line(&mut self, line: String) {
+        self.add_line_with_source(line, LineSource::Stdout);
+    }
+
+    pub fn add_line_with_source(&mut self, line: String, source: LineSource) {
         let timestamp = Local::now().format("%H:%M:%S%.3f").to_string();
         self.lines.push(LogEntry {
             text: line,
             timestamp,
+            source,
         });
         if self.lines.len() > self.max_lines {
             self.lines.remove(0);
@@ -1331,7 +1340,22 @@ impl App {
             .map(|pos| {
                 let idx = filtered[pos];
                 let entry = &self.lines[idx];
-                let display = truncate_str(&entry.text, content_width);
+
+                // Source prefix
+                let (prefix_str, prefix_width, prefix_style) = match entry.source {
+                    LineSource::Stdout => ("", 0, Style::default()),
+                    LineSource::Stderr => (
+                        STDERR_PREFIX,
+                        STDERR_PREFIX.len(),
+                        Style::default().fg(Color::Red),
+                    ),
+                    LineSource::System => (
+                        SYSTEM_PREFIX,
+                        SYSTEM_PREFIX.len(),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                };
+                let display = truncate_str(&entry.text, content_width.saturating_sub(prefix_width));
                 let is_selected = idx == self.selected;
 
                 // Timestamp span
@@ -1339,6 +1363,13 @@ impl App {
                     format!("{} ", entry.timestamp),
                     Style::default().fg(Color::DarkGray),
                 );
+
+                // Source prefix span (if any)
+                let prefix_span = if prefix_width > 0 {
+                    Some(Span::styled(prefix_str.to_string(), prefix_style))
+                } else {
+                    None
+                };
 
                 // Content spans
                 let content_spans = highlight_display_line(&display, &self.colors, is_selected);
@@ -1358,12 +1389,14 @@ impl App {
                         .collect();
                     Line::from(
                         std::iter::once(ts_span)
+                            .chain(prefix_span)
                             .chain(highlighted)
                             .collect::<Vec<_>>(),
                     )
                 } else {
                     Line::from(
                         std::iter::once(ts_span)
+                            .chain(prefix_span)
                             .chain(content_spans)
                             .collect::<Vec<_>>(),
                     )
@@ -1380,7 +1413,25 @@ impl App {
         let Some(entry) = &self.detail_entry else {
             return;
         };
-        let text = highlight_line(&entry.text, &self.colors);
+
+        let (prefix_str, prefix_style) = match entry.source {
+            LineSource::Stdout => ("", Style::default()),
+            LineSource::Stderr => (STDERR_PREFIX, Style::default().fg(Color::Red)),
+            LineSource::System => (SYSTEM_PREFIX, Style::default().fg(Color::Yellow)),
+        };
+
+        let prefix_span = if !prefix_str.is_empty() {
+            vec![Span::styled(prefix_str.to_string(), prefix_style)]
+        } else {
+            vec![]
+        };
+
+        let content = highlight_line(&entry.text, &self.colors);
+
+        let mut spans: Vec<Span<'static>> = prefix_span;
+        spans.extend(content.into_iter().flat_map(|line| line.spans));
+
+        let text = Text::from(Line::from(spans));
 
         let paragraph = Paragraph::new(text)
             .scroll((self.detail_scroll, 0))
@@ -3541,5 +3592,68 @@ mod tests {
         app.page_move(10, 10, true);
         assert_eq!(app.selected, 14); // last line
         assert_eq!(app.scroll_offset, 14); // cursor at top
+    }
+
+    #[test]
+    fn test_stderr_line_renders_with_prefix() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new(100);
+        app.add_line_with_source("stdout line".to_string(), LineSource::Stdout);
+        app.add_line_with_source("stderr line".to_string(), LineSource::Stderr);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rendered = buffer_to_string(&buf);
+
+        assert!(
+            rendered.contains("[stderr] stderr line"),
+            "stderr line should have [stderr] prefix, got: {}",
+            rendered
+        );
+        assert!(
+            !rendered.contains("[stderr] stdout"),
+            "stdout line should not have [stderr] prefix, got: {}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn test_system_line_renders_with_prefix() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new(100);
+        app.add_line_with_source("process exited with code 0".to_string(), LineSource::System);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rendered = buffer_to_string(&buf);
+
+        assert!(
+            rendered.contains("[logq] process exited with code 0"),
+            "system line should have [logq] prefix, got: {}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn test_filter_ignores_source_prefix() {
+        let mut app = App::new(100);
+        app.add_line_with_source("error: disk full".to_string(), LineSource::Stderr);
+        app.add_line_with_source("info: request ok".to_string(), LineSource::Stdout);
+
+        // Filter should match the text content, not the prefix
+        app.filter_query = Some(parse_filter_query("|= \"error\"").unwrap());
+        app.filtered_indices_cache = None;
+
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(app.lines[filtered[0]].text, "error: disk full");
     }
 }

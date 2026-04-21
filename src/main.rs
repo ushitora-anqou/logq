@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use logq::app::App;
+use logq::input::InputLine;
 
 /// logq - TUI viewer for NDJSON and text streams with live tailing, regex filtering, and vim keybindings
 #[derive(Parser)]
@@ -69,7 +70,7 @@ fn main() -> io::Result<()> {
     let is_pipe_mode = saved_stdin.is_some() && command.is_none();
 
     let mut terminal = ratatui::init();
-    let (rx, mut child, reader_handle) = if command.is_none() && saved_stdin.is_none() {
+    let (rx, child_pid, task_handle) = if command.is_none() && saved_stdin.is_none() {
         // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
         let (_, rx) = tokio::sync::mpsc::unbounded_channel();
         (rx, None, None)
@@ -79,38 +80,34 @@ fn main() -> io::Result<()> {
 
     let mut app = App::new(cli.max_lines);
     app.load_history();
-    let result = run_app(&mut terminal, &mut app, rx, &mut child);
+    let result = run_app(&mut terminal, &mut app, rx);
 
     // Command mode: kill spawned child process group
-    if let Some(ref mut c) = child
-        && let Some(pid) = c.id()
-    {
+    if let Some(pid) = child_pid {
         let pgid = pid as libc::pid_t;
         // Send SIGTERM to the entire process group
         unsafe { libc::kill(-pgid, libc::SIGTERM) };
         rt.block_on(async {
-            tokio::select! {
-                _ = c.wait() => {}
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    // Send SIGKILL to the entire process group
-                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
-                    let _ = c.start_kill();
-                    let _ = c.wait().await;
+            if let Some(handle) = task_handle {
+                tokio::select! {
+                    _ = handle => {}
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                        // Send SIGKILL to the entire process group
+                        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                        // Give exit monitor time to reap the child
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         });
+    } else if let Some(handle) = task_handle {
+        // Pipe/stdin mode: abort the reader task
+        handle.abort();
     }
 
     // Save state and restore terminal before any signal-based cleanup
     app.save_history();
     ratatui::restore();
-
-    // Abort the reader task to close the pipe read end promptly.
-    // Without this, the async task holds the file handle indefinitely,
-    // preventing the upstream command from receiving SIGPIPE.
-    if let Some(handle) = reader_handle {
-        handle.abort();
-    }
 
     // Pipe mode: terminate the upstream command in the pipeline.
     // After abort(), the pipe read end is closed and the upstream should
@@ -135,8 +132,7 @@ fn main() -> io::Result<()> {
 fn run_app(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-    _child: &mut Option<tokio::process::Child>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<InputLine>,
 ) -> io::Result<()> {
     // Initial render
     terminal.draw(|frame| app.render(frame))?;
@@ -146,7 +142,7 @@ fn run_app(
 
         // Receive new lines (non-blocking)
         while let Ok(line) = rx.try_recv() {
-            app.add_line(line);
+            app.add_line_with_source(line.text, line.source);
             needs_render = true;
         }
 
