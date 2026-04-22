@@ -125,7 +125,7 @@
               partitions = 1;
               partitionType = "count";
               cargoNextestPartitionsExtraArgs = "--no-tests=pass";
-              nativeBuildInputs = [ pkgs.util-linux ];
+              nativeBuildInputs = lib.optionals pkgs.stdenv.isLinux [ pkgs.util-linux ];
             }
           );
         };
