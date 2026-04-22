@@ -61,6 +61,7 @@
           commonArgs
           // {
             inherit cargoArtifacts;
+            doCheck = false;
           }
         );
       in
@@ -124,6 +125,7 @@
               partitions = 1;
               partitionType = "count";
               cargoNextestPartitionsExtraArgs = "--no-tests=pass";
+              nativeBuildInputs = [ pkgs.util-linux ];
             }
           );
         };
