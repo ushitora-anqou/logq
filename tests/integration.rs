@@ -220,8 +220,17 @@ fn test_detail_scroll() {
 #[test]
 fn test_tui_mode_with_command_no_panic() {
     let bin = env!("CARGO_BIN_EXE_logq");
-    let mut child = Command::new("script")
-        .args(["-qec", &format!("{} -- echo hello", bin), "/dev/null"])
+    let mut cmd = Command::new(if cfg!(target_os = "macos") {
+        "/usr/bin/script"
+    } else {
+        "script"
+    });
+    if cfg!(target_os = "macos") {
+        cmd.args(["-q", "/dev/null", bin, "--", "echo", "hello"]);
+    } else {
+        cmd.args(["-qec", &format!("{} -- echo hello", bin), "/dev/null"]);
+    }
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
