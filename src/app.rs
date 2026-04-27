@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
 use serde_json::Value;
 
@@ -21,12 +22,6 @@ const SYSTEM_PREFIX: &str = "[logq] ";
 struct ShortcutItem {
     key: &'static str,
     desc: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ViewMode {
-    List,
-    Detail,
 }
 
 #[derive(Debug, Clone)]
@@ -525,12 +520,9 @@ fn parse_quoted_string(chars: &[char], pos: &mut usize, len: usize) -> Result<St
 
 pub struct App {
     pub lines: Vec<LogEntry>,
-    pub view_mode: ViewMode,
     pub selected: usize,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
-    pub detail_scroll: u16,
-    pub detail_entry: Option<LogEntry>,
     pub filter_input: Option<tui_input::Input>,
     pub max_lines: usize,
     pub should_quit: bool,
@@ -548,19 +540,18 @@ pub struct App {
     history_search_start: Option<usize>,
     filtered_indices_cache: Option<Vec<usize>>,
     pending_g: bool,
+    pub expanded: HashSet<usize>,
+    pub expand_all: bool,
 }
 
 impl App {
     pub fn new(max_lines: usize) -> Self {
         Self {
             lines: Vec::new(),
-            view_mode: ViewMode::List,
             selected: 0,
             scroll_offset: 0,
             auto_scroll: true,
 
-            detail_scroll: 0,
-            detail_entry: None,
             filter_input: None,
 
             max_lines,
@@ -579,6 +570,8 @@ impl App {
             history_search_start: None,
             filtered_indices_cache: None,
             pending_g: false,
+            expanded: HashSet::new(),
+            expand_all: false,
         }
     }
 
@@ -619,12 +612,18 @@ impl App {
             if self.selected > 0 {
                 self.selected -= 1;
             }
+            self.expanded = self
+                .expanded
+                .iter()
+                .filter(|&&i| i > 0)
+                .map(|&i| i - 1)
+                .collect();
         }
         self.filtered_indices_cache = None;
         // auto_scroll: selected/scroll_offset are updated in update_auto_scroll()
     }
 
-    pub fn update_auto_scroll(&mut self, visible_height: usize) {
+    pub fn update_auto_scroll(&mut self, visible_height: usize, content_width: usize) {
         if !self.auto_scroll {
             return;
         }
@@ -633,7 +632,9 @@ impl App {
             return;
         }
         self.selected = filtered[filtered.len() - 1];
-        let max_offset = filtered.len().saturating_sub(visible_height);
+        let row_layout = self.compute_row_layout(&filtered, content_width);
+        let total_rows = Self::total_row_count(&row_layout);
+        let max_offset = total_rows.saturating_sub(visible_height);
         self.scroll_offset = max_offset;
     }
 
@@ -736,20 +737,62 @@ impl App {
         (area.height as usize).saturating_sub(overhead)
     }
 
-    fn ensure_selection_visible(&mut self, visible_height: usize) {
+    fn is_expanded(&self, lines_idx: usize) -> bool {
+        self.expand_all || self.expanded.contains(&lines_idx)
+    }
+
+    fn entry_display_height(&self, lines_idx: usize, content_width: usize) -> usize {
+        if !self.is_expanded(lines_idx) {
+            return 1;
+        }
+        let entry = &self.lines[lines_idx];
+        let text = highlight_line(&entry.text, &self.colors);
+        wrapped_text_height(&text, content_width)
+    }
+
+    fn compute_row_layout(&self, filtered: &[usize], content_width: usize) -> Vec<usize> {
+        filtered
+            .iter()
+            .map(|&idx| self.entry_display_height(idx, content_width))
+            .collect()
+    }
+
+    fn total_row_count(row_layout: &[usize]) -> usize {
+        row_layout.iter().sum()
+    }
+
+    fn entry_to_first_row(pos: usize, row_layout: &[usize]) -> usize {
+        row_layout.iter().take(pos).sum()
+    }
+
+    fn row_to_entry(row: usize, row_layout: &[usize]) -> Option<usize> {
+        let mut accumulated = 0usize;
+        for (pos, &height) in row_layout.iter().enumerate() {
+            if accumulated + height > row {
+                return Some(pos);
+            }
+            accumulated += height;
+        }
+        None
+    }
+
+    fn ensure_selection_visible(&mut self, visible_height: usize, content_width: usize) {
         let filtered = self.filtered_indices();
         let Some(selected_pos) = filtered.iter().position(|&i| i == self.selected) else {
             return;
         };
-        if self.scroll_offset > selected_pos {
-            self.scroll_offset = selected_pos;
+        let row_layout = self.compute_row_layout(&filtered, content_width);
+        let entry_first_row = Self::entry_to_first_row(selected_pos, &row_layout);
+        let entry_height = row_layout[selected_pos];
+        if self.scroll_offset > entry_first_row {
+            self.scroll_offset = entry_first_row;
         }
-        if selected_pos >= self.scroll_offset + visible_height {
-            self.scroll_offset = selected_pos - visible_height + 1;
+        if entry_first_row + entry_height > self.scroll_offset + visible_height {
+            self.scroll_offset = entry_first_row + entry_height - visible_height;
         }
     }
 
-    fn move_selection(&mut self, delta: isize, visible_height: usize) {
+    fn move_selection(&mut self, delta: isize, visible_height: usize, content_width: usize) {
         let filtered = self.filtered_indices();
         if filtered.is_empty() {
             return;
@@ -762,26 +805,37 @@ impl App {
             (current_pos as isize + delta).clamp(0, (filtered.len() as isize) - 1) as usize;
         self.selected = filtered[new_pos];
         self.auto_scroll = self.selected == filtered[filtered.len() - 1];
-        self.ensure_selection_visible(visible_height);
+        self.ensure_selection_visible(visible_height, content_width);
     }
 
-    fn page_move(&mut self, delta: isize, visible_height: usize, forward: bool) {
+    fn page_move(
+        &mut self,
+        delta_rows: isize,
+        visible_height: usize,
+        content_width: usize,
+        forward: bool,
+    ) {
         let filtered = self.filtered_indices();
         if filtered.is_empty() {
             return;
         }
+        let row_layout = self.compute_row_layout(&filtered, content_width);
         let current_pos = filtered
             .iter()
             .position(|&i| i == self.selected)
             .unwrap_or(0);
-        let new_pos =
-            (current_pos as isize + delta).clamp(0, (filtered.len() as isize) - 1) as usize;
-        self.selected = filtered[new_pos];
-        self.auto_scroll = false;
-        if forward {
-            self.scroll_offset = new_pos;
-        } else {
-            self.scroll_offset = new_pos.saturating_sub(visible_height.saturating_sub(1));
+        let current_row = Self::entry_to_first_row(current_pos, &row_layout);
+        let target_row = (current_row as isize + delta_rows)
+            .clamp(0, Self::total_row_count(&row_layout) as isize - 1)
+            as usize;
+        if let Some(new_pos) = Self::row_to_entry(target_row, &row_layout) {
+            self.selected = filtered[new_pos];
+            self.auto_scroll = false;
+            if forward {
+                self.scroll_offset = target_row;
+            } else {
+                self.scroll_offset = target_row.saturating_sub(visible_height.saturating_sub(1));
+            }
         }
     }
 
@@ -791,6 +845,7 @@ impl App {
                 return;
             }
             let visible_height = self.visible_height(&area);
+            let content_width = (area.width as usize).saturating_sub(TIMESTAMP_WIDTH);
 
             // Handle filter input mode
             if self.filter_input.is_some() {
@@ -798,14 +853,7 @@ impl App {
                 return;
             }
 
-            match self.view_mode {
-                ViewMode::List => {
-                    self.handle_list_key(key.code, key.modifiers, visible_height);
-                }
-                ViewMode::Detail => {
-                    self.handle_detail_key(key.code, key.modifiers, visible_height);
-                }
-            }
+            self.handle_list_key(key.code, key.modifiers, visible_height, content_width);
         }
     }
 
@@ -1075,7 +1123,13 @@ impl App {
         self.history_search_start = None;
     }
 
-    fn handle_list_key(&mut self, code: KeyCode, modifiers: KeyModifiers, visible_height: usize) {
+    fn handle_list_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        visible_height: usize,
+        content_width: usize,
+    ) {
         let filtered = self.filtered_indices();
         let max_idx = filtered.len().saturating_sub(1);
 
@@ -1085,17 +1139,17 @@ impl App {
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                 self.pending_g = false;
-                self.move_selection(1, visible_height);
+                self.move_selection(1, visible_height, content_width);
             }
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
                 self.pending_g = false;
-                self.move_selection(-1, visible_height);
+                self.move_selection(-1, visible_height, content_width);
             }
             (KeyCode::Char('G'), _) if !filtered.is_empty() => {
                 self.pending_g = false;
                 self.selected = filtered[max_idx];
                 self.auto_scroll = true;
-                self.ensure_selection_visible(visible_height);
+                self.ensure_selection_visible(visible_height, content_width);
             }
             (KeyCode::Char('g'), _) if !filtered.is_empty() => {
                 if self.pending_g {
@@ -1110,34 +1164,53 @@ impl App {
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
                 let half = (visible_height / 2).max(1);
-                self.page_move(half as isize, visible_height, true);
+                self.page_move(half as isize, visible_height, content_width, true);
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
                 let half = (visible_height / 2).max(1);
-                self.page_move(-(half as isize), visible_height, false);
+                self.page_move(-(half as isize), visible_height, content_width, false);
             }
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
-                self.page_move(visible_height as isize, visible_height, true);
+                self.page_move(visible_height as isize, visible_height, content_width, true);
             }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
-                self.page_move(-(visible_height as isize), visible_height, false);
+                self.page_move(
+                    -(visible_height as isize),
+                    visible_height,
+                    content_width,
+                    false,
+                );
             }
             (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
-                self.move_selection(1, visible_height);
+                self.move_selection(1, visible_height, content_width);
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
-                self.move_selection(-1, visible_height);
+                self.move_selection(-1, visible_height, content_width);
             }
             (KeyCode::Enter, _) if !filtered.is_empty() => {
                 self.pending_g = false;
-                self.view_mode = ViewMode::Detail;
-                self.detail_scroll = 0;
-                self.detail_entry = Some(self.lines[self.selected].clone());
+                if self.expanded.contains(&self.selected) {
+                    self.expanded.remove(&self.selected);
+                } else {
+                    self.expanded.insert(self.selected);
+                }
+            }
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+                self.pending_g = false;
+                if self.expand_all {
+                    self.expand_all = false;
+                    self.expanded.clear();
+                } else {
+                    self.expand_all = true;
+                    for &idx in &filtered {
+                        self.expanded.insert(idx);
+                    }
+                }
             }
             (KeyCode::Char('/'), _) => {
                 self.pending_g = false;
@@ -1155,45 +1228,6 @@ impl App {
             _ => {
                 self.pending_g = false;
             }
-        }
-    }
-
-    fn handle_detail_key(&mut self, code: KeyCode, modifiers: KeyModifiers, visible_height: usize) {
-        match (code, modifiers) {
-            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                self.handle_ctrl_x();
-            }
-            (KeyCode::Backspace, _) | (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
-                self.view_mode = ViewMode::List;
-                self.detail_entry = None;
-            }
-            (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
-                self.detail_scroll = self.detail_scroll.saturating_add(1);
-            }
-            (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
-                self.detail_scroll = self.detail_scroll.saturating_sub(1);
-            }
-            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                let half = (visible_height / 2).max(1) as u16;
-                self.detail_scroll = self.detail_scroll.saturating_add(half);
-            }
-            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                let half = (visible_height / 2).max(1) as u16;
-                self.detail_scroll = self.detail_scroll.saturating_sub(half);
-            }
-            (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                self.detail_scroll = self.detail_scroll.saturating_add(visible_height as u16);
-            }
-            (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                self.detail_scroll = self.detail_scroll.saturating_sub(visible_height as u16);
-            }
-            (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                self.detail_scroll = self.detail_scroll.saturating_add(1);
-            }
-            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                self.detail_scroll = self.detail_scroll.saturating_sub(1);
-            }
-            _ => {}
         }
     }
 
@@ -1220,10 +1254,7 @@ impl App {
                 .split(area);
 
             self.render_titlebar(frame, chunks[0]);
-            match self.view_mode {
-                ViewMode::List => self.render_list(frame, chunks[1]),
-                ViewMode::Detail => self.render_detail(frame, chunks[1]),
-            }
+            self.render_list(frame, chunks[1]);
             self.render_input_line(frame, chunks[2]);
             self.render_status_line(frame, chunks[3]);
             self.render_shortcut_bar(frame, chunks[4], &row1, num_cols, &key_widths);
@@ -1255,10 +1286,7 @@ impl App {
                 .split(area);
 
             self.render_titlebar(frame, chunks[0]);
-            match self.view_mode {
-                ViewMode::List => self.render_list(frame, chunks[1]),
-                ViewMode::Detail => self.render_detail(frame, chunks[1]),
-            }
+            self.render_list(frame, chunks[1]);
             self.render_status_line(frame, chunks[2]);
             self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, &key_widths);
             self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, &key_widths);
@@ -1276,9 +1304,6 @@ impl App {
         let mut center_parts = Vec::new();
         if let Some(q) = self.active_filter_query() {
             center_parts.push(format!("[filter: {}]", q.display_string()));
-        }
-        if self.view_mode == ViewMode::Detail {
-            center_parts.push("[detail]".to_string());
         }
         let center_text = center_parts.join(" > ");
 
@@ -1323,120 +1348,168 @@ impl App {
         let filtered = self.filtered_indices();
         let width = area.width as usize;
         let visible_height = area.height as usize;
-
-        // auto_scroll: follow the latest line
-        self.update_auto_scroll(visible_height);
-
-        // Clamp scroll_offset
-        let max_offset = filtered.len().saturating_sub(visible_height);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
-
-        let visible_start = self.scroll_offset;
-        let visible_end = (visible_start + visible_height).min(filtered.len());
-
         let content_width = width.saturating_sub(TIMESTAMP_WIDTH);
 
-        let lines: Vec<Line<'static>> = (visible_start..visible_end)
-            .map(|pos| {
-                let idx = filtered[pos];
-                let entry = &self.lines[idx];
+        // auto_scroll: follow the latest line
+        self.update_auto_scroll(visible_height, content_width);
 
-                // Source prefix
-                let (prefix_str, prefix_width, prefix_style) = match entry.source {
-                    LineSource::Stdout => ("", 0, Style::default()),
-                    LineSource::Stderr => (
-                        STDERR_PREFIX,
-                        STDERR_PREFIX.len(),
-                        Style::default().fg(Color::Red),
-                    ),
-                    LineSource::System => (
-                        SYSTEM_PREFIX,
-                        SYSTEM_PREFIX.len(),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                };
-                let display = truncate_str(&entry.text, content_width.saturating_sub(prefix_width));
-                let is_selected = idx == self.selected;
+        // Compute row layout and clamp scroll_offset
+        let row_layout = self.compute_row_layout(&filtered, content_width);
+        let total_rows = Self::total_row_count(&row_layout);
+        let max_offset = total_rows.saturating_sub(visible_height);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
 
-                // Timestamp span
-                let ts_span = Span::styled(
-                    format!("{} ", entry.timestamp),
-                    Style::default().fg(Color::DarkGray),
-                );
+        // Find the first entry that overlaps with the visible area
+        let mut display_rows: Vec<Line<'static>> = Vec::new();
+        let mut accumulated_rows = 0usize;
+        let mut rows_remaining = visible_height;
 
-                // Source prefix span (if any)
-                let prefix_span = if prefix_width > 0 {
-                    Some(Span::styled(prefix_str.to_string(), prefix_style))
-                } else {
-                    None
-                };
+        for (pos, &idx) in filtered.iter().enumerate() {
+            if rows_remaining == 0 {
+                break;
+            }
+            let entry_height = row_layout[pos];
+            let entry_first_row = accumulated_rows;
+            accumulated_rows += entry_height;
 
-                // Content spans
-                let content_spans = highlight_display_line(&display, &self.colors, is_selected);
-                if is_selected {
-                    let highlighted: Vec<Span<'static>> = content_spans
-                        .into_iter()
-                        .map(|span| {
-                            Span::styled(
-                                span.content,
-                                span.style.patch(
-                                    Style::default()
-                                        .bg(Color::DarkGray)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                            )
-                        })
-                        .collect();
-                    Line::from(
-                        std::iter::once(ts_span)
-                            .chain(prefix_span)
-                            .chain(highlighted)
-                            .collect::<Vec<_>>(),
-                    )
-                } else {
-                    Line::from(
-                        std::iter::once(ts_span)
-                            .chain(prefix_span)
-                            .chain(content_spans)
-                            .collect::<Vec<_>>(),
-                    )
+            // Skip entries entirely above the viewport
+            if accumulated_rows <= self.scroll_offset {
+                continue;
+            }
+            // Skip entries entirely below the viewport
+            if entry_first_row >= self.scroll_offset + visible_height {
+                break;
+            }
+
+            // Calculate how many rows of this entry to skip (if it starts above viewport)
+            let skip_rows = self.scroll_offset.saturating_sub(entry_first_row);
+
+            let entry = &self.lines[idx];
+            let is_selected = idx == self.selected;
+            let is_expanded = self.is_expanded(idx);
+
+            // Source prefix
+            let (prefix_str, prefix_width, prefix_style) = match entry.source {
+                LineSource::Stdout => ("", 0, Style::default()),
+                LineSource::Stderr => (
+                    STDERR_PREFIX,
+                    STDERR_PREFIX.len(),
+                    Style::default().fg(Color::Red),
+                ),
+                LineSource::System => (
+                    SYSTEM_PREFIX,
+                    SYSTEM_PREFIX.len(),
+                    Style::default().fg(Color::Yellow),
+                ),
+            };
+
+            // Timestamp span
+            let ts_span = Span::styled(
+                format!("{} ", entry.timestamp),
+                Style::default().fg(Color::DarkGray),
+            );
+            let ts_pad = Span::raw(" ".repeat(TIMESTAMP_WIDTH));
+
+            // Source prefix span (if any)
+            let prefix_span: Vec<Span<'static>> = if prefix_width > 0 {
+                vec![Span::styled(prefix_str.to_string(), prefix_style)]
+            } else {
+                vec![]
+            };
+
+            if is_expanded {
+                let highlighted = highlight_line(&entry.text, &self.colors);
+                let mut row_idx = 0usize;
+                for (i, hl_line) in highlighted.lines.into_iter().enumerate() {
+                    let wrapped = wrap_line(&hl_line, content_width);
+                    if wrapped.is_empty() {
+                        if row_idx >= skip_rows && rows_remaining > 0 {
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            if i == 0 {
+                                spans.push(ts_span.clone());
+                                spans.extend(prefix_span.iter().cloned());
+                            } else {
+                                spans.push(ts_pad.clone());
+                            }
+                            if is_selected {
+                                spans.push(Span::styled(
+                                    " ".repeat(content_width),
+                                    Style::default().bg(Color::DarkGray),
+                                ));
+                            }
+                            display_rows.push(Line::from(spans));
+                            rows_remaining -= 1;
+                        }
+                        row_idx += 1;
+                        continue;
+                    }
+                    for (j, wrapped_part) in wrapped.into_iter().enumerate() {
+                        if row_idx >= skip_rows && rows_remaining > 0 {
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            if i == 0 && j == 0 {
+                                spans.push(ts_span.clone());
+                                spans.extend(prefix_span.iter().cloned());
+                            } else {
+                                spans.push(ts_pad.clone());
+                            }
+                            if is_selected {
+                                let selected_spans: Vec<Span<'static>> = wrapped_part
+                                    .into_iter()
+                                    .map(|span| {
+                                        Span::styled(
+                                            span.content,
+                                            span.style.patch(
+                                                Style::default()
+                                                    .bg(Color::DarkGray)
+                                                    .add_modifier(Modifier::BOLD),
+                                            ),
+                                        )
+                                    })
+                                    .collect();
+                                spans.extend(selected_spans);
+                            } else {
+                                spans.extend(wrapped_part);
+                            }
+                            display_rows.push(Line::from(spans));
+                            rows_remaining -= 1;
+                        }
+                        row_idx += 1;
+                    }
                 }
-            })
-            .collect();
+            } else {
+                // Collapsed: single row
+                if skip_rows == 0 && rows_remaining > 0 {
+                    let display =
+                        truncate_str(&entry.text, content_width.saturating_sub(prefix_width));
+                    let content_spans = highlight_display_line(&display, &self.colors, is_selected);
+                    let mut spans: Vec<Span<'static>> = vec![ts_span];
+                    spans.extend(prefix_span);
+                    if is_selected {
+                        let highlighted: Vec<Span<'static>> = content_spans
+                            .into_iter()
+                            .map(|span| {
+                                Span::styled(
+                                    span.content,
+                                    span.style.patch(
+                                        Style::default()
+                                            .bg(Color::DarkGray)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                )
+                            })
+                            .collect();
+                        spans.extend(highlighted);
+                    } else {
+                        spans.extend(content_spans);
+                    }
+                    display_rows.push(Line::from(spans));
+                    rows_remaining -= 1;
+                }
+            }
+        }
 
-        let text = Text::from(lines);
+        let text = Text::from(display_rows);
         let paragraph = Paragraph::new(text);
-        frame.render_widget(paragraph, area);
-    }
-
-    fn render_detail(&self, frame: &mut Frame, area: Rect) {
-        let Some(entry) = &self.detail_entry else {
-            return;
-        };
-
-        let (prefix_str, prefix_style) = match entry.source {
-            LineSource::Stdout => ("", Style::default()),
-            LineSource::Stderr => (STDERR_PREFIX, Style::default().fg(Color::Red)),
-            LineSource::System => (SYSTEM_PREFIX, Style::default().fg(Color::Yellow)),
-        };
-
-        let prefix_span = if !prefix_str.is_empty() {
-            vec![Span::styled(prefix_str.to_string(), prefix_style)]
-        } else {
-            vec![]
-        };
-
-        let content = highlight_line(&entry.text, &self.colors);
-
-        let mut spans: Vec<Span<'static>> = prefix_span;
-        spans.extend(content.into_iter().flat_map(|line| line.spans));
-
-        let text = Text::from(Line::from(spans));
-
-        let paragraph = Paragraph::new(text)
-            .scroll((self.detail_scroll, 0))
-            .wrap(Wrap { trim: false });
-
         frame.render_widget(paragraph, area);
     }
 
@@ -1580,95 +1653,91 @@ impl App {
     }
 
     fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
-        // Returns (row1, row2, num_cols, key_widths) where:
-        // - num_cols is shared column count for alignment across both rows
-        // - key_widths[i] is the max key length between row1[i] and row2[i], used to pad keys
-        let (row1, row2, num_cols) = match self.view_mode {
-            ViewMode::List if self.filter_input.is_some() => {
-                if self.history_search_pattern.is_some() {
-                    (
-                        [
-                            ShortcutItem {
-                                key: "^R",
-                                desc: "Next match",
-                            },
-                            ShortcutItem {
-                                key: "^G",
-                                desc: "Cancel search",
-                            },
-                            ShortcutItem {
-                                key: "Enter",
-                                desc: "Apply filter",
-                            },
-                            ShortcutItem {
-                                key: "Esc",
-                                desc: "Accept match",
-                            },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                        ],
-                        [
-                            ShortcutItem {
-                                key: "Bksp",
-                                desc: "Delete char",
-                            },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                        ],
-                        8,
-                    )
-                } else {
-                    (
-                        [
-                            ShortcutItem {
-                                key: "Enter",
-                                desc: "Apply filter",
-                            },
-                            ShortcutItem {
-                                key: "Up/Dn",
-                                desc: "History",
-                            },
-                            ShortcutItem {
-                                key: "^R",
-                                desc: "Search hist",
-                            },
-                            ShortcutItem {
-                                key: "Esc",
-                                desc: "Cancel",
-                            },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                        ],
-                        [
-                            ShortcutItem {
-                                key: "Bksp",
-                                desc: "Delete char",
-                            },
-                            ShortcutItem {
-                                key: "^C",
-                                desc: "Cancel",
-                            },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                            ShortcutItem { key: "", desc: "" },
-                        ],
-                        8,
-                    )
-                }
+        let (row1, row2, num_cols) = if self.filter_input.is_some() {
+            if self.history_search_pattern.is_some() {
+                (
+                    [
+                        ShortcutItem {
+                            key: "^R",
+                            desc: "Next match",
+                        },
+                        ShortcutItem {
+                            key: "^G",
+                            desc: "Cancel search",
+                        },
+                        ShortcutItem {
+                            key: "Enter",
+                            desc: "Apply filter",
+                        },
+                        ShortcutItem {
+                            key: "Esc",
+                            desc: "Accept match",
+                        },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                    ],
+                    [
+                        ShortcutItem {
+                            key: "Bksp",
+                            desc: "Delete char",
+                        },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                    ],
+                    8,
+                )
+            } else {
+                (
+                    [
+                        ShortcutItem {
+                            key: "Enter",
+                            desc: "Apply filter",
+                        },
+                        ShortcutItem {
+                            key: "Up/Dn",
+                            desc: "History",
+                        },
+                        ShortcutItem {
+                            key: "^R",
+                            desc: "Search hist",
+                        },
+                        ShortcutItem {
+                            key: "Esc",
+                            desc: "Cancel",
+                        },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                    ],
+                    [
+                        ShortcutItem {
+                            key: "Bksp",
+                            desc: "Delete char",
+                        },
+                        ShortcutItem {
+                            key: "^C",
+                            desc: "Cancel",
+                        },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem { key: "", desc: "" },
+                    ],
+                    8,
+                )
             }
-            ViewMode::List => (
+        } else {
+            (
                 [
                     ShortcutItem {
                         key: "j",
@@ -1680,7 +1749,7 @@ impl App {
                     },
                     ShortcutItem {
                         key: "Enter",
-                        desc: "Open detail",
+                        desc: "Toggle expand",
                     },
                     ShortcutItem {
                         key: "/",
@@ -1713,8 +1782,8 @@ impl App {
                         desc: "Half pg up",
                     },
                     ShortcutItem {
-                        key: "^F",
-                        desc: "Full pg down",
+                        key: "^O",
+                        desc: "Expand all",
                     },
                     ShortcutItem {
                         key: "^B",
@@ -1728,64 +1797,14 @@ impl App {
                         key: "^Y",
                         desc: "One line up",
                     },
-                    ShortcutItem { key: "", desc: "" },
-                    ShortcutItem { key: "", desc: "" },
-                ],
-                8,
-            ),
-            ViewMode::Detail => (
-                [
-                    ShortcutItem {
-                        key: "q",
-                        desc: "Back to list",
-                    },
-                    ShortcutItem {
-                        key: "j",
-                        desc: "Scroll down",
-                    },
-                    ShortcutItem {
-                        key: "k",
-                        desc: "Scroll up",
-                    },
-                    ShortcutItem {
-                        key: "^X",
-                        desc: "Exit logq",
-                    },
-                    ShortcutItem { key: "", desc: "" },
-                    ShortcutItem { key: "", desc: "" },
-                    ShortcutItem { key: "", desc: "" },
-                    ShortcutItem { key: "", desc: "" },
-                ],
-                [
-                    ShortcutItem {
-                        key: "^D",
-                        desc: "Half pg down",
-                    },
-                    ShortcutItem {
-                        key: "^U",
-                        desc: "Half pg up",
-                    },
                     ShortcutItem {
                         key: "^F",
                         desc: "Full pg down",
                     },
-                    ShortcutItem {
-                        key: "^B",
-                        desc: "Full pg up",
-                    },
-                    ShortcutItem {
-                        key: "^E",
-                        desc: "One line down",
-                    },
-                    ShortcutItem {
-                        key: "^Y",
-                        desc: "One line up",
-                    },
-                    ShortcutItem { key: "", desc: "" },
                     ShortcutItem { key: "", desc: "" },
                 ],
                 8,
-            ),
+            )
         };
 
         // Compute per-column key widths: max key length between row1 and row2 for each column
@@ -1814,6 +1833,81 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         }
         format!("{}…", &s[..end])
     }
+}
+
+fn wrapped_text_height(text: &Text, width: usize) -> usize {
+    if width == 0 {
+        return text.lines.len().max(1);
+    }
+    text.lines
+        .iter()
+        .map(|line| {
+            let line_width = line.width();
+            if line_width == 0 {
+                1
+            } else {
+                line_width.div_ceil(width)
+            }
+        })
+        .sum()
+}
+
+fn wrap_line(line: &Line<'_>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let line_width = line.width();
+    if width == 0 || line_width == 0 || line_width <= width {
+        let spans: Vec<Span<'static>> = line
+            .spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect();
+        return if spans.is_empty() {
+            vec![]
+        } else {
+            vec![spans]
+        };
+    }
+
+    let mut result = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0usize;
+
+    for span in &line.spans {
+        let mut remaining: String = span.content.clone().into();
+        let style = span.style;
+        while !remaining.is_empty() {
+            let available = width.saturating_sub(current_width);
+            if available == 0 && !current.is_empty() {
+                result.push(std::mem::take(&mut current));
+                current_width = 0;
+                continue;
+            }
+            let (chunk, chunk_width) = if remaining.chars().count() <= available {
+                let w = remaining.chars().count();
+                let s = std::mem::take(&mut remaining);
+                (s, w)
+            } else {
+                let mut end = available;
+                while end > 0 && !remaining.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let w = remaining[..end].chars().count();
+                let s = remaining[..end].to_string();
+                remaining = remaining[end..].to_string();
+                (s, w)
+            };
+            current.push(Span::styled(chunk, style));
+            current_width += chunk_width;
+
+            if current_width >= width {
+                result.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    result
 }
 
 /// Apply lightweight syntax highlighting to a display line for the list view.
@@ -2034,17 +2128,17 @@ mod tests {
         app.add_line("b".to_string());
         app.add_line("c".to_string());
         app.selected = 0;
-        app.move_selection(1, 10);
+        app.move_selection(1, 10, 67);
         assert_eq!(app.selected, 1);
-        app.move_selection(1, 10);
+        app.move_selection(1, 10, 67);
         assert_eq!(app.selected, 2);
-        app.move_selection(1, 10);
+        app.move_selection(1, 10, 67);
         assert_eq!(app.selected, 2);
-        app.move_selection(-1, 10);
+        app.move_selection(-1, 10, 67);
         assert_eq!(app.selected, 1);
-        app.move_selection(-1, 10);
+        app.move_selection(-1, 10, 67);
         assert_eq!(app.selected, 0);
-        app.move_selection(-1, 10);
+        app.move_selection(-1, 10, 67);
         assert_eq!(app.selected, 0);
     }
 
@@ -2066,7 +2160,7 @@ mod tests {
         assert_eq!(filtered, vec![0, 2]);
 
         app.selected = 0;
-        app.move_selection(1, 10);
+        app.move_selection(1, 10, 67);
         assert_eq!(app.selected, 2);
     }
 
@@ -2083,7 +2177,7 @@ mod tests {
         app.add_line("a".to_string());
         app.add_line("b".to_string());
         app.add_line("c".to_string());
-        app.move_selection(-1, 10);
+        app.move_selection(-1, 10, 67);
         assert!(!app.auto_scroll);
     }
 
@@ -2110,14 +2204,14 @@ mod tests {
     }
 
     #[test]
-    fn test_view_mode_toggle() {
+    fn test_expanded_toggle() {
         let mut app = App::new(100);
         app.add_line("{\"key\":\"val\"}".to_string());
-        assert_eq!(app.view_mode, ViewMode::List);
-        app.view_mode = ViewMode::Detail;
-        assert_eq!(app.view_mode, ViewMode::Detail);
-        app.view_mode = ViewMode::List;
-        assert_eq!(app.view_mode, ViewMode::List);
+        assert!(!app.expanded.contains(&0));
+        app.expanded.insert(0);
+        assert!(app.expanded.contains(&0));
+        app.expanded.remove(&0);
+        assert!(!app.expanded.contains(&0));
     }
 
     #[test]
@@ -2129,7 +2223,7 @@ mod tests {
         app.selected = 10;
         app.scroll_offset = 10;
 
-        app.move_selection(5, 10);
+        app.move_selection(5, 10, 67);
         assert_eq!(app.selected, 15);
     }
 
@@ -2141,7 +2235,7 @@ mod tests {
         }
         app.selected = 20;
         app.scroll_offset = 0;
-        app.ensure_selection_visible(10);
+        app.ensure_selection_visible(10, 67);
         assert!(app.selected >= app.scroll_offset);
         assert!(app.selected < app.scroll_offset + 10);
     }
@@ -2170,13 +2264,13 @@ mod tests {
         let visible_height = 5;
 
         // Start at the bottom
-        app.update_auto_scroll(visible_height);
+        app.update_auto_scroll(visible_height, 67);
         assert_eq!(app.selected, 18);
         assert_eq!(app.scroll_offset, 5);
 
         // Move up until we reach the top of the visible area
         for _ in 0..5 {
-            app.move_selection(-1, visible_height);
+            app.move_selection(-1, visible_height, 67);
         }
         assert_eq!(app.selected, 8); // filtered[4]
         // scroll_offset should have adjusted to keep selected visible
@@ -2200,7 +2294,7 @@ mod tests {
             app.add_line(format!("line{}", i));
         }
         assert!(app.auto_scroll);
-        app.update_auto_scroll(10);
+        app.update_auto_scroll(10, 67);
         assert_eq!(app.selected, 49);
         assert_eq!(app.scroll_offset, 40);
     }
@@ -2213,7 +2307,7 @@ mod tests {
         }
         app.auto_scroll = false;
         app.scroll_offset = 5;
-        app.update_auto_scroll(10);
+        app.update_auto_scroll(10, 67);
         assert_eq!(app.scroll_offset, 5);
     }
 
@@ -2233,7 +2327,7 @@ mod tests {
                 json_key: None,
             })],
         });
-        app.update_auto_scroll(10);
+        app.update_auto_scroll(10, 67);
         assert_eq!(app.selected, 4);
     }
 
@@ -3309,73 +3403,6 @@ mod tests {
         );
     }
 
-    // detail_entry preservation tests
-
-    #[test]
-    fn test_detail_entry_preserved_after_eviction() {
-        let mut app = App::new(3);
-        app.add_line("line-a".to_string());
-        app.add_line("line-b".to_string());
-        app.add_line("line-c".to_string());
-        app.selected = 1; // line-b
-
-        // Enter detail mode: snapshot line-b
-        app.detail_entry = Some(app.lines[app.selected].clone());
-        app.view_mode = ViewMode::Detail;
-
-        // Add more lines to trigger eviction of line-a, then line-b
-        app.add_line("line-d".to_string()); // evicts line-a
-        app.add_line("line-e".to_string()); // evicts line-b
-
-        // detail_entry should still hold line-b
-        assert_eq!(app.detail_entry.as_ref().unwrap().text, "line-b");
-    }
-
-    #[test]
-    fn test_detail_entry_cleared_on_back_to_list() {
-        let mut app = App::new(100);
-        app.add_line("line-a".to_string());
-        app.selected = 0;
-        app.detail_entry = Some(app.lines[0].clone());
-        app.view_mode = ViewMode::Detail;
-
-        // Exit detail mode
-        app.view_mode = ViewMode::List;
-        app.detail_entry = None;
-
-        assert!(app.detail_entry.is_none());
-    }
-
-    #[test]
-    fn test_render_detail_shows_preserved_entry() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let mut app = App::new(2);
-        app.add_line("preserved-text".to_string());
-        app.selected = 0;
-        app.detail_entry = Some(app.lines[0].clone());
-        app.view_mode = ViewMode::Detail;
-
-        // Evict the line from self.lines
-        app.add_line("new-line-1".to_string()); // lines = ["preserved-text", "new-line-1"]
-        app.add_line("new-line-2".to_string()); // evicts "preserved-text"
-        assert!(!app.lines.iter().any(|e| e.text == "preserved-text"));
-
-        // render_detail should still show "preserved-text"
-        let backend = TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.render(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let rendered = buffer_to_string(&buf);
-
-        assert!(
-            rendered.contains("preserved-text"),
-            "detail view should show preserved entry text, got: {}",
-            rendered
-        );
-    }
-
     #[test]
     fn test_breadcrumb_updates_live_during_filter_input() {
         use ratatui::Terminal;
@@ -3448,12 +3475,12 @@ mod tests {
         app.auto_scroll = false;
 
         // First 'g' press: pending_g becomes true
-        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10, 67);
         assert!(app.pending_g);
         assert_eq!(app.selected, 15); // no movement yet
 
         // Second 'g' press: jumps to first line
-        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10, 67);
         assert!(!app.pending_g);
         assert_eq!(app.selected, 0);
         assert_eq!(app.scroll_offset, 0);
@@ -3469,11 +3496,11 @@ mod tests {
         app.selected = 5;
 
         // First 'g' press
-        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10, 67);
         assert!(app.pending_g);
 
         // Press 'j': should reset pending_g and move normally
-        app.handle_list_key(KeyCode::Char('j'), KeyModifiers::NONE, 10);
+        app.handle_list_key(KeyCode::Char('j'), KeyModifiers::NONE, 10, 67);
         assert!(!app.pending_g);
         assert_eq!(app.selected, 6); // moved by 1, not jumped to first
     }
@@ -3486,10 +3513,10 @@ mod tests {
         }
         app.selected = 5;
 
-        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10);
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10, 67);
         assert!(app.pending_g);
 
-        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10);
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
         assert!(!app.pending_g);
         assert_eq!(app.selected, 5); // no movement
     }
@@ -3505,7 +3532,7 @@ mod tests {
         app.auto_scroll = true;
 
         // C-f: move forward by visible_height (10)
-        app.page_move(10, 10, true);
+        app.page_move(10, 10, 67, true);
 
         assert_eq!(app.selected, 10);
         assert_eq!(app.scroll_offset, 10); // cursor at top of screen
@@ -3523,7 +3550,7 @@ mod tests {
         app.auto_scroll = false;
 
         // C-b: move backward by visible_height (10)
-        app.page_move(-10, 10, false);
+        app.page_move(-10, 10, 67, false);
 
         assert_eq!(app.selected, 10);
         // cursor at bottom of screen: scroll_offset = new_pos - (visible_height - 1)
@@ -3541,7 +3568,7 @@ mod tests {
         app.scroll_offset = 0;
 
         // C-d: move forward by half (5) with visible_height=10
-        app.page_move(5, 10, true);
+        app.page_move(5, 10, 67, true);
 
         assert_eq!(app.selected, 5);
         assert_eq!(app.scroll_offset, 5); // cursor at top
@@ -3557,7 +3584,7 @@ mod tests {
         app.scroll_offset = 10;
 
         // C-u: move backward by half (5) with visible_height=10
-        app.page_move(-5, 10, false);
+        app.page_move(-5, 10, 67, false);
 
         assert_eq!(app.selected, 15);
         // cursor at bottom: scroll_offset = 15 - (10 - 1) = 6
@@ -3574,7 +3601,7 @@ mod tests {
         app.scroll_offset = 0;
 
         // C-b from the top: should clamp at 0
-        app.page_move(-10, 10, false);
+        app.page_move(-10, 10, 67, false);
         assert_eq!(app.selected, 0);
         assert_eq!(app.scroll_offset, 0);
     }
@@ -3589,7 +3616,7 @@ mod tests {
         app.scroll_offset = 5;
 
         // C-f near end: should clamp at last line
-        app.page_move(10, 10, true);
+        app.page_move(10, 10, 67, true);
         assert_eq!(app.selected, 14); // last line
         assert_eq!(app.scroll_offset, 14); // cursor at top
     }

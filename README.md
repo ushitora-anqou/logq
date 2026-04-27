@@ -9,9 +9,9 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **Live tailing**: Lines stream in real-time like `tail -f`, with auto-scroll that pauses when you navigate away and resumes with `G`
 - **Timestamps**: Each line shows its received time (`HH:MM:SS.mmm`)
 - **JSON syntax highlighting**: Color-coded keys, strings, numbers, booleans, and null values
-- **Pretty-printed detail view**: Press Enter to expand a line into a readable, indented JSON view
+- **Inline expand**: Press Enter to expand a line into a readable, indented JSON view inline; press `C-o` to expand/collapse all lines
 - **Query-based filtering**: Type `/` to enter filter mode with a structured query language supporting literal contains, regex match, and their negations, combinable with AND semantics; JSON key/value conditions support `and`/`or` with parentheses
-- **Breadcrumb bar**: Shows current context (detail view, active filter) at the top of the screen
+- **Breadcrumb bar**: Shows current context (active filter) at the top of the screen
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
 - **Memory-bounded**: Configurable line limit discards oldest lines when exceeded
@@ -44,7 +44,8 @@ logq -- command arg1 arg2 ...
 |---------------|---------------------------------|
 | `j` / `Down`  | Move selection down             |
 | `k` / `Up`    | Move selection up               |
-| `Enter`       | Open detail view for selection  |
+| `Enter`       | Toggle expand/collapse selected |
+| `C-o`         | Expand/collapse all lines       |
 | `/`           | Start filter input              |
 | `Esc`         | Clear active filter             |
 | `G`           | Jump to latest line (resume auto-scroll) |
@@ -97,21 +98,6 @@ JSON key conditions support `and`, `or`, and parentheses for grouping:
 | `\| (level = "error" or level = "warn") and active = true` | Grouped with parens |
 
 Plain-text conditions (`|=`, `!=`, `|~`, `!~`) cannot use `and`/`or` — they are always ANDed at the top level.
-
-### Detail view
-
-| Key           | Action                          |
-|---------------|---------------------------------|
-| `Backspace` / `Esc` | Return to list view       |
-| `j` / `Down`  | Scroll down                     |
-| `k` / `Up`    | Scroll up                       |
-| `C-d`         | Scroll down half page           |
-| `C-u`         | Scroll up half page             |
-| `C-f`         | Scroll down full page           |
-| `C-b`         | Scroll up full page             |
-| `C-e`         | Scroll down one line            |
-| `C-y`         | Scroll up one line              |
-| `C-x`         | Quit                            |
 
 ## Examples
 

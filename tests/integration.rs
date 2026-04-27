@@ -2,7 +2,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use logq::app::{App, ViewMode};
+use logq::app::App;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -103,23 +103,21 @@ fn test_navigation_jk() {
 }
 
 #[test]
-fn test_view_switching() {
+fn test_enter_toggles_expand() {
     let mut t = TestApp::new(10000);
     t.add_line("{\"key\":\"val\"}");
     t.render();
 
-    // List view: no [detail] breadcrumb
-    assert!(!t.screen_contains("[detail]"));
+    // Initially not expanded
+    assert!(!t.app.expanded.contains(&0));
 
+    // Press Enter to expand
     t.press(KeyCode::Enter, KeyModifiers::NONE);
-    t.render();
-    assert_eq!(t.app.view_mode, ViewMode::Detail);
-    assert!(t.screen_contains("[detail]"));
+    assert!(t.app.expanded.contains(&0));
 
-    t.press(KeyCode::Esc, KeyModifiers::NONE);
-    t.render();
-    assert_eq!(t.app.view_mode, ViewMode::List);
-    assert!(!t.screen_contains("[detail]"));
+    // Press Enter again to collapse
+    t.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!t.app.expanded.contains(&0));
 }
 
 #[test]
@@ -199,22 +197,17 @@ fn test_max_lines() {
 }
 
 #[test]
-fn test_detail_scroll() {
+fn test_expand_shows_formatted_json() {
     let mut t = TestApp::new(10000);
-    t.add_line(
-        "{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6,\"g\":7,\"h\":8,\"i\":9,\"j\":10}",
-    );
+    t.add_line("{\"key\":\"val\"}");
     t.render();
 
+    // Press Enter to expand
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     t.render();
-    assert_eq!(t.app.view_mode, ViewMode::Detail);
-    assert!(t.screen_contains("[detail]"));
-    assert_eq!(t.app.detail_scroll, 0);
 
-    t.press(KeyCode::Char('d'), KeyModifiers::CONTROL);
-    t.render();
-    assert!(t.app.detail_scroll > 0);
+    // Should show pretty-printed JSON with key on separate line
+    assert!(t.screen_contains("\"key\""));
 }
 
 #[test]
@@ -1089,16 +1082,19 @@ fn test_ctrl_r_uses_typed_text_as_initial_pattern() {
 }
 
 #[test]
-fn test_detail_q_returns_to_list() {
+fn test_ctrl_o_toggles_expand_all() {
     let mut t = TestApp::new(10000);
-    t.add_line("hello world");
+    t.add_line("line1");
+    t.add_line("line2");
+    t.add_line("line3");
     t.render();
 
-    // Enter detail view
-    t.press(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(t.app.view_mode, ViewMode::Detail);
+    // Press Ctrl+O to expand all
+    t.press(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    assert!(t.app.expand_all);
 
-    // Press q to go back
-    t.press(KeyCode::Char('q'), KeyModifiers::NONE);
-    assert_eq!(t.app.view_mode, ViewMode::List);
+    // Press Ctrl+O again to collapse all
+    t.press(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    assert!(!t.app.expand_all);
+    assert!(t.app.expanded.is_empty());
 }
