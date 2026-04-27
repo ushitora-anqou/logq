@@ -836,6 +836,7 @@ impl App {
             } else {
                 self.scroll_offset = target_row.saturating_sub(visible_height.saturating_sub(1));
             }
+            self.ensure_selection_visible(visible_height, content_width);
         }
     }
 
@@ -3666,6 +3667,88 @@ mod tests {
             rendered.contains("[logq] process exited with code 0"),
             "system line should have [logq] prefix, got: {}",
             rendered
+        );
+    }
+
+    #[test]
+    fn test_page_move_forward_keeps_expanded_entry_visible() {
+        let mut app = App::new(100);
+        for i in 0..30 {
+            app.add_line(format!("line{}", i));
+        }
+        // Expand entry 0 so it spans multiple rows (content_width=20, "line0" is short but
+        // highlight produces spans; use a long JSON string to get a tall entry).
+        app.lines[0].text = r#"{"key":"abcdefghijklmnopqrstuvwxyz"}"#.to_string();
+        app.expanded.insert(0);
+
+        let content_width = 20;
+        let visible_height = 5;
+        app.selected = 0;
+        app.scroll_offset = 0;
+
+        // C-f: page forward — should land on an entry whose full height is visible
+        app.page_move(visible_height as isize, visible_height, content_width, true);
+
+        let filtered = app.filtered_indices();
+        let sel_pos = filtered.iter().position(|&i| i == app.selected).unwrap();
+        let row_layout = app.compute_row_layout(&filtered, content_width);
+        let entry_first_row = App::entry_to_first_row(sel_pos, &row_layout);
+        let entry_height = row_layout[sel_pos];
+
+        assert!(
+            entry_first_row >= app.scroll_offset,
+            "entry should start after scroll_offset"
+        );
+        assert!(
+            entry_first_row + entry_height <= app.scroll_offset + visible_height,
+            "entry should fit entirely within visible area: first_row={}, height={}, scroll={}, visible={}",
+            entry_first_row,
+            entry_height,
+            app.scroll_offset,
+            visible_height,
+        );
+    }
+
+    #[test]
+    fn test_page_move_backward_keeps_expanded_entry_visible() {
+        let mut app = App::new(100);
+        for i in 0..30 {
+            app.add_line(format!("line{}", i));
+        }
+        // Expand entry 15 with a tall JSON payload
+        app.lines[15].text = r#"{"key":"abcdefghijklmnopqrstuvwxyz"}"#.to_string();
+        app.expanded.insert(15);
+
+        let content_width = 20;
+        let visible_height = 5;
+        app.selected = 20;
+        app.scroll_offset = 15;
+
+        // C-b: page backward
+        app.page_move(
+            -(visible_height as isize),
+            visible_height,
+            content_width,
+            false,
+        );
+
+        let filtered = app.filtered_indices();
+        let sel_pos = filtered.iter().position(|&i| i == app.selected).unwrap();
+        let row_layout = app.compute_row_layout(&filtered, content_width);
+        let entry_first_row = App::entry_to_first_row(sel_pos, &row_layout);
+        let entry_height = row_layout[sel_pos];
+
+        assert!(
+            entry_first_row >= app.scroll_offset,
+            "entry should start after scroll_offset"
+        );
+        assert!(
+            entry_first_row + entry_height <= app.scroll_offset + visible_height,
+            "entry should fit entirely within visible area: first_row={}, height={}, scroll={}, visible={}",
+            entry_first_row,
+            entry_height,
+            app.scroll_offset,
+            visible_height,
         );
     }
 
