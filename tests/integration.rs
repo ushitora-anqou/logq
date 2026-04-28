@@ -1149,3 +1149,54 @@ fn test_status_bar_shows_exited() {
 
     assert!(t.screen_contains("EXITED"));
 }
+
+#[test]
+fn test_help_overlay_render() {
+    let mut t = TestApp::new(100);
+    t.add_line("hello");
+    t.render();
+    assert!(!t.screen_contains("logq help"));
+
+    t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    t.render();
+    assert!(t.screen_contains("logq help"));
+}
+
+#[test]
+fn test_help_overlay_close_esc() {
+    let mut t = TestApp::new(100);
+    t.add_line("hello");
+    t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    t.render();
+    assert!(t.screen_contains("logq help"));
+
+    t.press(KeyCode::Esc, KeyModifiers::NONE);
+    t.render();
+    assert!(!t.screen_contains("logq help"));
+}
+
+#[test]
+fn test_help_overlay_close_ctrl_g() {
+    let mut t = TestApp::new(100);
+    t.add_line("hello");
+    t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    t.render();
+    assert!(t.screen_contains("logq help"));
+
+    t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    t.render();
+    assert!(!t.screen_contains("logq help"));
+}
+
+#[test]
+fn test_help_overlay_ignores_other_keys() {
+    let mut t = TestApp::new(100);
+    t.add_line("hello");
+    t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    t.render();
+    assert!(t.screen_contains("logq help"));
+
+    t.press(KeyCode::Char('j'), KeyModifiers::NONE);
+    t.render();
+    assert!(t.screen_contains("logq help"));
+}

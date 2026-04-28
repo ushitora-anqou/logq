@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use serde_json::Value;
 
@@ -550,6 +550,7 @@ pub struct App {
     pub expanded: HashSet<usize>,
     pub expand_all: bool,
     pub process_exited: bool,
+    pub show_help: bool,
 }
 
 impl App {
@@ -581,6 +582,7 @@ impl App {
             expanded: HashSet::new(),
             expand_all: false,
             process_exited: false,
+            show_help: false,
         }
     }
 
@@ -857,6 +859,12 @@ impl App {
             if key.kind != KeyEventKind::Press {
                 return;
             }
+
+            if self.show_help {
+                self.handle_help_key(key);
+                return;
+            }
+
             let visible_height = self.visible_height(&area);
             let content_width = (area.width as usize).saturating_sub(TIMESTAMP_WIDTH);
 
@@ -867,6 +875,16 @@ impl App {
             }
 
             self.handle_list_key(key.code, key.modifiers, visible_height, content_width);
+        }
+    }
+
+    pub fn handle_help_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.show_help = false,
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.show_help = false
+            }
+            _ => {}
         }
     }
 
@@ -949,6 +967,9 @@ impl App {
             KeyCode::Down => {
                 self.clear_history_search();
                 self.handle_history_down();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.show_help = true;
             }
             _ => {
                 // Delegate all other editing to tui-input
@@ -1164,6 +1185,10 @@ impl App {
                 self.auto_scroll = true;
                 self.ensure_selection_visible(visible_height, content_width);
             }
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
+                self.pending_g = false;
+                self.show_help = true;
+            }
             (KeyCode::Char('g'), _) if !filtered.is_empty() => {
                 if self.pending_g {
                     self.selected = filtered[0];
@@ -1318,6 +1343,10 @@ impl App {
             self.render_status_line(frame, chunks[2]);
             self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, &key_widths);
             self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, &key_widths);
+        }
+
+        if self.show_help {
+            self.render_help(frame, area);
         }
     }
 
@@ -1710,6 +1739,86 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
+    fn render_help(&self, frame: &mut Frame, area: Rect) {
+        let key_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let section_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let dim = Style::default().fg(Color::DarkGray);
+
+        let entries: Vec<(&str, Vec<(&str, &str)>)> = vec![
+            (
+                "Navigation",
+                vec![
+                    ("j / Down", "Move down"),
+                    ("k / Up", "Move up"),
+                    ("G", "Jump to end"),
+                    ("gg", "Jump to top"),
+                    ("^D", "Half page down"),
+                    ("^U", "Half page up"),
+                    ("^F", "Full page down"),
+                    ("^B", "Full page up"),
+                    ("^E", "One line down"),
+                    ("^Y", "One line up"),
+                ],
+            ),
+            (
+                "View",
+                vec![
+                    ("Enter", "Toggle expand"),
+                    ("^O", "Expand/collapse all"),
+                    ("y", "Yank (copy) line"),
+                ],
+            ),
+            (
+                "Filter",
+                vec![("/", "Start filter input"), ("Esc", "Clear filter")],
+            ),
+            ("Other", vec![("^G", "Help"), ("^X", "Exit logq")]),
+        ];
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        for (section, bindings) in &entries {
+            lines.push(Line::from(vec![Span::styled(
+                section.to_string(),
+                section_style,
+            )]));
+            for (key, desc) in bindings {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:<12}", key), key_style),
+                    Span::raw(*desc),
+                ]));
+            }
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(vec![Span::styled(
+            "Press Esc or ^G to close".to_string(),
+            dim,
+        )]));
+
+        let content_height = lines.len() as u16;
+        let content_width = 40u16;
+
+        let help_area = Rect {
+            x: area.width.saturating_sub(content_width + 4) / 2,
+            y: area.height.saturating_sub(content_height + 2) / 2,
+            width: (content_width + 4).min(area.width),
+            height: (content_height + 2).min(area.height),
+        };
+
+        frame.render_widget(Clear, help_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(Span::styled(" logq help ", key_style));
+        let inner = block.inner(help_area);
+        frame.render_widget(block, help_area);
+        frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+    }
+
     fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
         let (row1, row2, num_cols) = if self.filter_input.is_some() {
             if self.history_search_pattern.is_some() {
@@ -1770,7 +1879,10 @@ impl App {
                             key: "Esc",
                             desc: "Cancel",
                         },
-                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem {
+                            key: "^G",
+                            desc: "Help",
+                        },
                         ShortcutItem { key: "", desc: "" },
                         ShortcutItem { key: "", desc: "" },
                         ShortcutItem { key: "", desc: "" },
@@ -1860,8 +1972,8 @@ impl App {
                         desc: "Full pg down",
                     },
                     ShortcutItem {
-                        key: "y",
-                        desc: "Yank line",
+                        key: "^G",
+                        desc: "Help",
                     },
                 ],
                 8,
@@ -3912,5 +4024,41 @@ mod tests {
         app.add_line("test".to_string());
         let encoded = base64::engine::general_purpose::STANDARD.encode("test".as_bytes());
         assert_eq!(encoded, "dGVzdA==");
+    }
+
+    #[test]
+    fn test_ctrl_g_opens_help() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        assert!(!app.show_help);
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::CONTROL, 24, 67);
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn test_help_esc_closes() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        app.show_help = true;
+        app.handle_help_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn test_help_ctrl_g_closes() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        app.show_help = true;
+        app.handle_help_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn test_help_ignores_other_keys() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        app.show_help = true;
+        app.handle_help_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(app.show_help);
     }
 }
