@@ -75,10 +75,11 @@ logq --file logfile.json
 | `Backspace`   | Delete last character / cancel if empty |
 | `<char>`      | Append character to filter      |
 
-After pressing `/`, type a query using the following operators. Values must be enclosed in double quotes. Multiple conditions are combined with AND (space-separated).
+After pressing `/`, type a query using the following operators. Plain text without an operator is treated as a substring match (equivalent to `|= "..."`). Values with operators must be enclosed in double quotes. Multiple conditions are combined with AND (space-separated).
 
 | Query                | Meaning                                      |
 |----------------------|----------------------------------------------|
+| `error`              | Show lines containing "error"                |
 | `\|= "error"`        | Show lines containing "error"                |
 | `\|~ "err.*timeout"` | Show lines matching the regex                |
 | `!= "debug"`         | Show lines NOT containing "debug"            |

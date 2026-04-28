@@ -478,10 +478,14 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
                 json_key: None,
             }));
         } else {
-            return Err(format!(
-                "Expected operator |= |~ != !~ or | key at position {}",
-                pos
-            ));
+            let value: String = chars[pos..].iter().collect();
+            segments.push(FilterSegment::Plain(FilterCondition {
+                operator: FilterOp::Contains,
+                value: FilterValue::String(value),
+                regex: None,
+                json_key: None,
+            }));
+            break;
         }
     }
 
@@ -2515,13 +2519,41 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_error_no_operator() {
-        assert!(parse_filter_query(r#""foo""#).is_err());
+    fn test_parse_bare_text_as_contains() {
+        let query = parse_filter_query("foo").unwrap();
+        assert_eq!(query.segments.len(), 1);
+        let c = get_plain(&query, 0);
+        assert_eq!(c.operator, FilterOp::Contains);
+        assert_eq!(c.value, FilterValue::String("foo".to_string()));
+        assert!(c.regex.is_none());
+        assert!(c.json_key.is_none());
     }
 
     #[test]
-    fn test_parse_error_invalid_operator() {
-        assert!(parse_filter_query(r#"== "foo""#).is_err());
+    fn test_parse_bare_text_with_spaces_as_contains() {
+        let query = parse_filter_query("foo bar").unwrap();
+        assert_eq!(query.segments.len(), 1);
+        let c = get_plain(&query, 0);
+        assert_eq!(c.operator, FilterOp::Contains);
+        assert_eq!(c.value, FilterValue::String("foo bar".to_string()));
+    }
+
+    #[test]
+    fn test_parse_quoted_text_without_operator_as_contains() {
+        let query = parse_filter_query(r#""foo""#).unwrap();
+        assert_eq!(query.segments.len(), 1);
+        let c = get_plain(&query, 0);
+        assert_eq!(c.operator, FilterOp::Contains);
+        assert_eq!(c.value, FilterValue::String(r#""foo""#.to_string()));
+    }
+
+    #[test]
+    fn test_parse_invalid_operator_as_contains() {
+        let query = parse_filter_query(r#"== "foo""#).unwrap();
+        assert_eq!(query.segments.len(), 1);
+        let c = get_plain(&query, 0);
+        assert_eq!(c.operator, FilterOp::Contains);
+        assert_eq!(c.value, FilterValue::String(r#"== "foo""#.to_string()));
     }
 
     #[test]
@@ -3263,23 +3295,49 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_error_plain_and_plain() {
-        assert!(parse_filter_query(r#"|= "foo" and |= "bar""#).is_err());
+    fn test_parse_plain_and_bare_text() {
+        let query = parse_filter_query(r#"|= "foo" and |= "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 2);
+        assert_eq!(get_plain(&query, 0).operator, FilterOp::Contains);
+        assert_eq!(
+            get_plain(&query, 0).value,
+            FilterValue::String("foo".to_string())
+        );
+        assert_eq!(get_plain(&query, 1).operator, FilterOp::Contains);
+        assert_eq!(
+            get_plain(&query, 1).value,
+            FilterValue::String(r#"and |= "bar""#.to_string())
+        );
     }
 
     #[test]
-    fn test_parse_error_plain_and_not() {
-        assert!(parse_filter_query(r#"|= "foo" and != "bar""#).is_err());
+    fn test_parse_plain_and_not_bare_text() {
+        let query = parse_filter_query(r#"|= "foo" and != "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 2);
+        assert_eq!(
+            get_plain(&query, 1).value,
+            FilterValue::String(r#"and != "bar""#.to_string())
+        );
     }
 
     #[test]
-    fn test_parse_error_plain_or_not() {
-        assert!(parse_filter_query(r#"|= "foo" or != "bar""#).is_err());
+    fn test_parse_plain_or_not_bare_text() {
+        let query = parse_filter_query(r#"|= "foo" or != "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 2);
+        assert_eq!(
+            get_plain(&query, 1).value,
+            FilterValue::String(r#"or != "bar""#.to_string())
+        );
     }
 
     #[test]
-    fn test_parse_error_regex_or_not_regex() {
-        assert!(parse_filter_query(r#"|~ "foo" or !~ "bar""#).is_err());
+    fn test_parse_regex_or_not_regex_bare_text() {
+        let query = parse_filter_query(r#"|~ "foo" or !~ "bar""#).unwrap();
+        assert_eq!(query.segments.len(), 2);
+        assert_eq!(
+            get_plain(&query, 1).value,
+            FilterValue::String(r#"or !~ "bar""#.to_string())
+        );
     }
 
     #[test]
