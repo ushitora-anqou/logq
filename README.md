@@ -30,10 +30,17 @@ command-producing-ndjson | logq
 logq -- command arg1 arg2 ...
 ```
 
+### Read from a file
+
+```sh
+logq --file logfile.json
+```
+
 ### Options
 
 ```
 --max-lines <N>  Maximum number of lines to keep in memory (default: 10000)
+--file <PATH>    Read from a file instead of stdin or a command
 ```
 
 ## Keybindings
@@ -56,6 +63,7 @@ logq -- command arg1 arg2 ...
 | `C-b`         | Scroll up full page             |
 | `C-e`         | Scroll down one line            |
 | `C-y`         | Scroll up one line              |
+| `y`           | Copy selected line to clipboard |
 | `C-x`         | Quit                            |
 
 ### Filter input mode

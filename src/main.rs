@@ -15,6 +15,10 @@ struct Cli {
     #[arg(long, default_value = "10000")]
     max_lines: usize,
 
+    /// Read from a file instead of stdin or a command
+    #[arg(long = "file")]
+    file: Option<String>,
+
     /// Command to execute. Use `logq -- command args` when the command starts with `-`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
@@ -66,11 +70,22 @@ fn main() -> io::Result<()> {
         Some(cli.command)
     };
 
+    if cli.file.is_some() && command.is_some() {
+        eprintln!("error: --file and command arguments are mutually exclusive");
+        std::process::exit(1);
+    }
+
     let saved_stdin = redirect_stdin_to_tty()?;
-    let is_pipe_mode = saved_stdin.is_some() && command.is_none();
+    let is_pipe_mode = saved_stdin.is_some() && command.is_none() && cli.file.is_none();
 
     let mut terminal = ratatui::init();
-    let (rx, child_pid, task_handle) = if command.is_none() && saved_stdin.is_none() {
+    let (rx, child_pid, task_handle) = if let Some(file_path) = &cli.file {
+        let file = File::open(file_path).unwrap_or_else(|e| {
+            eprintln!("error: cannot open file '{}': {}", file_path, e);
+            std::process::exit(1);
+        });
+        logq::input::spawn_line_reader(None, Some(file))
+    } else if command.is_none() && saved_stdin.is_none() {
         // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
         let (_, rx) = tokio::sync::mpsc::unbounded_channel();
         (rx, None, None)
