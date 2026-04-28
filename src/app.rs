@@ -542,6 +542,7 @@ pub struct App {
     pending_g: bool,
     pub expanded: HashSet<usize>,
     pub expand_all: bool,
+    pub process_exited: bool,
 }
 
 impl App {
@@ -572,6 +573,7 @@ impl App {
             pending_g: false,
             expanded: HashSet::new(),
             expand_all: false,
+            process_exited: false,
         }
     }
 
@@ -601,6 +603,9 @@ impl App {
     }
 
     pub fn add_line_with_source(&mut self, line: String, source: LineSource) {
+        if source == LineSource::System && line.contains("process exited") {
+            self.process_exited = true;
+        }
         let timestamp = Local::now().format("%H:%M:%S%.3f").to_string();
         self.lines.push(LogEntry {
             text: line,
@@ -1553,7 +1558,7 @@ impl App {
         frame.render_widget(status, area);
     }
 
-    fn render_status_line(&self, frame: &mut Frame, area: Rect) {
+    fn render_status_line(&mut self, frame: &mut Frame, area: Rect) {
         let width = area.width as usize;
 
         let error = self
@@ -1561,15 +1566,45 @@ impl App {
             .as_deref()
             .or(self.filter_error.as_deref());
 
-        let spans = if let Some(err) = error {
-            vec![
+        if let Some(err) = error {
+            let spans = vec![
                 Span::styled(format!(" Error: {}", err), Style::default().fg(Color::Red)),
                 Span::raw(" ".repeat(width.saturating_sub(err.len() + 9))),
-            ]
-        } else {
-            vec![Span::raw(" ".repeat(width))]
-        };
+            ];
+            let paragraph = Paragraph::new(Line::from(spans));
+            frame.render_widget(paragraph, area);
+            return;
+        }
 
+        let mut parts = Vec::new();
+
+        let filtered = self.filtered_indices();
+        if let Some(pos) = filtered.iter().position(|&i| i == self.selected) {
+            parts.push(format!("{}/{}", pos + 1, filtered.len()));
+        }
+        if self.filter_query.is_some() || self.live_filter_query.is_some() {
+            parts.push(format!("({} total)", self.lines.len()));
+        }
+
+        if self.process_exited {
+            parts.push("EXITED".to_string());
+        }
+
+        if self.auto_scroll {
+            parts.push("FOLLOW".to_string());
+        } else {
+            parts.push("SCROLL".to_string());
+        }
+
+        let status_text = parts.join(" │ ");
+        let text_len = status_text.len() + 1;
+        let spans = vec![
+            Span::styled(
+                format!(" {}", status_text),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::raw(" ".repeat(width.saturating_sub(text_len))),
+        ];
         let paragraph = Paragraph::new(Line::from(spans));
         frame.render_widget(paragraph, area);
     }
@@ -3765,5 +3800,17 @@ mod tests {
         let filtered = app.filtered_indices();
         assert_eq!(filtered.len(), 1);
         assert_eq!(app.lines[filtered[0]].text, "error: disk full");
+    }
+
+    #[test]
+    fn test_process_exited_detection() {
+        let mut app = App::new(100);
+        assert!(!app.process_exited);
+
+        app.add_line_with_source("some output".to_string(), LineSource::Stdout);
+        assert!(!app.process_exited);
+
+        app.add_line_with_source("process exited with code 0".to_string(), LineSource::System);
+        assert!(app.process_exited);
     }
 }

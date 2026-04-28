@@ -1098,3 +1098,54 @@ fn test_ctrl_o_toggles_expand_all() {
     assert!(!t.app.expand_all);
     assert!(t.app.expanded.is_empty());
 }
+
+#[test]
+fn test_status_bar_shows_follow() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    // Default: auto_scroll is true, should show FOLLOW
+    assert!(t.screen_contains("FOLLOW"));
+}
+
+#[test]
+fn test_status_bar_shows_scroll() {
+    let mut t = TestApp::new(10000);
+    t.add_line("a");
+    t.add_line("b");
+    t.add_line("c");
+    t.render();
+
+    // Press k to disable auto-scroll
+    t.press(KeyCode::Char('k'), KeyModifiers::NONE);
+    t.render();
+
+    assert!(t.screen_contains("SCROLL"));
+}
+
+#[test]
+fn test_status_bar_shows_position() {
+    let mut t = TestApp::new(10000);
+    t.add_line("a");
+    t.add_line("b");
+    t.add_line("c");
+    t.render();
+
+    // Should show position like "3/3"
+    assert!(t.screen_contains("3/3"));
+}
+
+#[test]
+fn test_status_bar_shows_exited() {
+    let mut t = TestApp::new(10000);
+    t.add_line("hello");
+    t.render();
+
+    assert!(!t.screen_contains("EXITED"));
+
+    t.app.process_exited = true;
+    t.render();
+
+    assert!(t.screen_contains("EXITED"));
+}
