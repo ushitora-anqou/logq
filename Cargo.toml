@@ -33,6 +33,7 @@ install-path = "CARGO_HOME"
 install-updater = false
 
 [dependencies]
+base64 = "0.22"
 chrono = "0.4.44"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"

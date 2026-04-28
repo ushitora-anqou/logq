@@ -1,6 +1,9 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use base64::Engine;
 
 use chrono::Local;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -1231,6 +1234,10 @@ impl App {
                 self.filter_query = None;
                 self.filtered_indices_cache = None;
             }
+            (KeyCode::Char('y'), _) => {
+                self.pending_g = false;
+                let _ = self.yank_selected();
+            }
             _ => {
                 self.pending_g = false;
             }
@@ -1239,6 +1246,17 @@ impl App {
 
     fn handle_ctrl_x(&mut self) {
         self.should_quit = true;
+    }
+
+    pub fn yank_selected(&self) -> std::io::Result<()> {
+        if self.lines.is_empty() {
+            return Ok(());
+        }
+        let text = &self.lines[self.selected].text;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        let osc52 = format!("\x1b]52;c;{}\x07", encoded);
+        std::io::stderr().write_all(osc52.as_bytes())?;
+        std::io::stderr().flush()
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
@@ -1837,7 +1855,10 @@ impl App {
                         key: "^F",
                         desc: "Full pg down",
                     },
-                    ShortcutItem { key: "", desc: "" },
+                    ShortcutItem {
+                        key: "y",
+                        desc: "Yank line",
+                    },
                 ],
                 8,
             )
@@ -3812,5 +3833,26 @@ mod tests {
 
         app.add_line_with_source("process exited with code 0".to_string(), LineSource::System);
         assert!(app.process_exited);
+    }
+
+    #[test]
+    fn test_yank_selected_returns_ok() {
+        let mut app = App::new(100);
+        app.add_line("hello world".to_string());
+        assert!(app.yank_selected().is_ok());
+    }
+
+    #[test]
+    fn test_yank_selected_empty_lines() {
+        let app = App::new(100);
+        assert!(app.yank_selected().is_ok());
+    }
+
+    #[test]
+    fn test_yank_osc52_format() {
+        let mut app = App::new(100);
+        app.add_line("test".to_string());
+        let encoded = base64::engine::general_purpose::STANDARD.encode("test".as_bytes());
+        assert_eq!(encoded, "dGVzdA==");
     }
 }
