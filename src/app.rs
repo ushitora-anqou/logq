@@ -24,7 +24,7 @@ const SYSTEM_PREFIX: &str = "[logq] ";
 
 struct ShortcutItem {
     key: &'static str,
-    desc: &'static str,
+    desc: String,
 }
 
 #[derive(Debug, Clone)]
@@ -126,7 +126,7 @@ fn parse_line_format_template(input: &str) -> Result<LineFormatTemplate, String>
             }
             // Expect '.'
             if pos >= len || chars[pos] != '.' {
-                return Err("Expected '.' after '{{{'  in line_format template".to_string());
+                return Err(t!("filter.error.expected_dot_after_brace").to_string());
             }
             pos += 1;
             let key_start = pos;
@@ -137,14 +137,14 @@ fn parse_line_format_template(input: &str) -> Result<LineFormatTemplate, String>
             }
             let key: String = chars[key_start..pos].iter().collect();
             if key.is_empty() {
-                return Err("Empty key in line_format template".to_string());
+                return Err(t!("filter.error.empty_key").to_string());
             }
             // Skip whitespace before }}
             while pos < len && chars[pos] == ' ' {
                 pos += 1;
             }
             if pos + 1 >= len || chars[pos] != '}' || chars[pos + 1] != '}' {
-                return Err("Unterminated {{ in line_format template".to_string());
+                return Err(t!("filter.error.unterminated_brace").to_string());
             }
             pos += 2;
             parts.push(TemplatePart::Key(key));
@@ -359,7 +359,7 @@ fn parse_json_condition(
     }
     let key: String = chars[key_start..*pos].iter().collect();
     if key.is_empty() {
-        return Err(format!("Expected key name at position {}", pos));
+        return Err(t!("filter.error.expected_key_name", pos = pos).to_string());
     }
 
     skip_whitespace(chars, pos, len);
@@ -373,7 +373,7 @@ fn parse_json_condition(
             *pos += 2;
             (FilterOp::JsonNotRegexMatch, true)
         } else {
-            return Err(format!("Expected operator = != =~ !~ at position {}", pos));
+            return Err(t!("filter.error.expected_json_operator", pos = pos).to_string());
         }
     } else if *pos < len && chars[*pos] == '=' {
         *pos += 1;
@@ -384,7 +384,7 @@ fn parse_json_condition(
             (FilterOp::JsonEquals, false)
         }
     } else {
-        return Err(format!("Expected operator = != =~ !~ at position {}", pos));
+        return Err(t!("filter.error.expected_json_operator", pos = pos).to_string());
     };
 
     skip_whitespace(chars, pos, len);
@@ -392,11 +392,14 @@ fn parse_json_condition(
     // Read value
     let (value, regex) = if *pos < len && chars[*pos] == '"' {
         let s = parse_quoted_string(chars, pos, len)?;
-        let r = if needs_regex {
-            Some(regex::Regex::new(&s).map_err(|e| format!("Invalid regex: {}", e))?)
-        } else {
-            None
-        };
+        let r =
+            if needs_regex {
+                Some(regex::Regex::new(&s).map_err(|e| {
+                    t!("filter.error.invalid_regex", err = e.to_string()).to_string()
+                })?)
+            } else {
+                None
+            };
         (FilterValue::String(s), r)
     } else if *pos + 3 < len && chars[*pos..*pos + 4] == ['t', 'r', 'u', 'e'] {
         *pos += 4;
@@ -421,7 +424,7 @@ fn parse_json_condition(
             *pos > start
         };
         if !has_digits {
-            return Err(format!("Expected value at position {}", num_start));
+            return Err(t!("filter.error.expected_value", pos = num_start).to_string());
         }
         if *pos < len && chars[*pos] == '.' {
             *pos += 1;
@@ -432,7 +435,7 @@ fn parse_json_condition(
         let num_str: String = chars[num_start..*pos].iter().collect();
         let n: f64 = num_str
             .parse()
-            .map_err(|_| format!("Invalid number: {}", num_str))?;
+            .map_err(|_| t!("filter.error.invalid_number", num = num_str.as_str()).to_string())?;
         (FilterValue::Number(n), None)
     };
 
@@ -452,7 +455,7 @@ fn parse_json_primary(chars: &[char], pos: &mut usize, len: usize) -> Result<Jso
         let expr = parse_json_or_expr(chars, pos, len)?;
         skip_whitespace(chars, pos, len);
         if *pos >= len || chars[*pos] != ')' {
-            return Err("Expected ')'".to_string());
+            return Err(t!("filter.error.expected_paren").to_string());
         }
         *pos += 1; // skip ')'
         Ok(expr)
@@ -527,9 +530,9 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
 
                 let value = parse_quoted_string(&chars, &mut pos, len)?;
                 let regex = match op {
-                    FilterOp::RegexMatch => Some(
-                        regex::Regex::new(&value).map_err(|e| format!("Invalid regex: {}", e))?,
-                    ),
+                    FilterOp::RegexMatch => Some(regex::Regex::new(&value).map_err(|e| {
+                        t!("filter.error.invalid_regex", err = e.to_string()).to_string()
+                    })?),
                     _ => None,
                 };
 
@@ -558,12 +561,12 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
         } else if chars[pos] == '!' {
             // Plain text operators: != or !~
             if pos + 1 >= len {
-                return Err(format!("Expected operator at position {}", pos));
+                return Err(t!("filter.error.expected_operator", pos = pos).to_string());
             }
             let op: FilterOp = match chars[pos + 1] {
                 '=' => FilterOp::NotContains,
                 '~' => FilterOp::NotRegexMatch,
-                _ => return Err(format!("Expected operator |= |~ != !~ at position {}", pos)),
+                _ => return Err(t!("filter.error.expected_text_operator", pos = pos).to_string()),
             };
             pos += 2;
 
@@ -571,9 +574,9 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
 
             let value = parse_quoted_string(&chars, &mut pos, len)?;
             let regex = match op {
-                FilterOp::NotRegexMatch => {
-                    Some(regex::Regex::new(&value).map_err(|e| format!("Invalid regex: {}", e))?)
-                }
+                FilterOp::NotRegexMatch => Some(regex::Regex::new(&value).map_err(|e| {
+                    t!("filter.error.invalid_regex", err = e.to_string()).to_string()
+                })?),
                 _ => None,
             };
 
@@ -600,19 +603,19 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
 
 fn parse_quoted_string(chars: &[char], pos: &mut usize, len: usize) -> Result<String, String> {
     if *pos >= len || chars[*pos] != '"' {
-        return Err(format!("Expected '\"' at position {}", pos));
+        return Err(t!("filter.error.expected_quote", pos = *pos).to_string());
     }
     *pos += 1;
     let mut value = String::new();
     loop {
         if *pos >= len {
-            return Err("Unterminated string".to_string());
+            return Err(t!("filter.error.unterminated_string").to_string());
         }
         match chars[*pos] {
             '\\' => {
                 *pos += 1;
                 if *pos >= len {
-                    return Err("Unterminated escape".to_string());
+                    return Err(t!("filter.error.unterminated_escape").to_string());
                 }
                 value.push('\\');
                 value.push(chars[*pos]);
@@ -1438,11 +1441,12 @@ impl App {
             self.render_shortcut_bar(frame, chunks[5], &row2, num_cols, &key_widths);
 
             let cursor_x = if let Some(pattern) = &self.history_search_pattern {
-                let prefix_len = if self.history_search_failed {
-                    "(failed reverse-i-search)'".len()
+                let label = if self.history_search_failed {
+                    t!("input.failed_reverse_i_search").to_string()
                 } else {
-                    "(reverse-i-search)'".len()
+                    t!("input.reverse_i_search").to_string()
                 };
+                let prefix_len = label.len() + 1; // +1 for the "'" suffix
                 (1 + prefix_len + pattern.len()) as u16
             } else {
                 let input = self.filter_input.as_ref().unwrap();
@@ -1484,7 +1488,7 @@ impl App {
         // Build center text
         let mut center_parts = Vec::new();
         if let Some(q) = self.active_filter_query() {
-            center_parts.push(format!("[filter: {}]", q.display_string()));
+            center_parts.push(t!("titlebar.filter_prefix", query = q.display_string()).to_string());
         }
         let center_text = center_parts.join(" > ");
 
@@ -1703,9 +1707,9 @@ impl App {
 
         let mut s: Vec<Span<'static>> = if let Some(pattern) = &self.history_search_pattern {
             let label = if self.history_search_failed {
-                "(failed reverse-i-search)"
+                t!("input.failed_reverse_i_search").to_string()
             } else {
-                "(reverse-i-search)"
+                t!("input.reverse_i_search").to_string()
             };
             let matched = self.filter_input.as_ref().map(|i| i.value()).unwrap_or("");
             vec![
@@ -1745,9 +1749,14 @@ impl App {
             .or(self.filter_error.as_deref());
 
         if let Some(err) = error {
+            let err_prefix = t!("status.error_prefix").to_string();
+            let full_len = err_prefix.len() + err.len() + 1; // +1 for leading space
             let spans = vec![
-                Span::styled(format!(" Error: {}", err), Style::default().fg(Color::Red)),
-                Span::raw(" ".repeat(width.saturating_sub(err.len() + 9))),
+                Span::styled(
+                    format!("{}{}", err_prefix, err),
+                    Style::default().fg(Color::Red),
+                ),
+                Span::raw(" ".repeat(width.saturating_sub(full_len))),
             ];
             let paragraph = Paragraph::new(Line::from(spans));
             frame.render_widget(paragraph, area);
@@ -1761,17 +1770,17 @@ impl App {
             parts.push(format!("{}/{}", pos + 1, filtered.len()));
         }
         if self.filter_query.is_some() || self.live_filter_query.is_some() {
-            parts.push(format!("({} total)", self.lines.len()));
+            parts.push(t!("status.total", count = self.lines.len()).to_string());
         }
 
         if self.process_exited {
-            parts.push("EXITED".to_string());
+            parts.push(t!("status.exited").to_string());
         }
 
         if self.auto_scroll {
-            parts.push("FOLLOW".to_string());
+            parts.push(t!("status.follow").to_string());
         } else {
-            parts.push("SCROLL".to_string());
+            parts.push(t!("status.scroll").to_string());
         }
 
         let status_text = parts.join(" │ ");
@@ -1823,13 +1832,9 @@ impl App {
             // Reserve: key + 1 space + at least 1 padding space
             let desc_available = col_width.saturating_sub(kw + 2);
             let desc_text = if desc_available > 0 {
-                if item.desc.len() > desc_available {
-                    &item.desc[..desc_available]
-                } else {
-                    item.desc
-                }
+                truncate_str(&item.desc, desc_available)
             } else {
-                ""
+                String::new()
             };
             let padding = col_width
                 .saturating_sub(kw + 1)
@@ -1875,60 +1880,66 @@ impl App {
             .add_modifier(Modifier::BOLD);
         let dim = Style::default().fg(Color::DarkGray);
 
-        let entries: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        let entries: Vec<(String, Vec<(&str, String)>)> = vec![
             (
-                "Navigation",
+                t!("help.section.navigation").to_string(),
                 vec![
-                    ("j / Down", "Move down"),
-                    ("k / Up", "Move up"),
-                    ("G", "Jump to end"),
-                    ("gg", "Jump to top"),
-                    ("^D", "Half page down"),
-                    ("^U", "Half page up"),
-                    ("^F", "Full page down"),
-                    ("^B", "Full page up"),
-                    ("^E", "One line down"),
-                    ("^Y", "One line up"),
+                    ("j / Down", t!("help.key.move_down").to_string()),
+                    ("k / Up", t!("help.key.move_up").to_string()),
+                    ("G", t!("help.key.jump_to_end").to_string()),
+                    ("gg", t!("help.key.jump_to_top").to_string()),
+                    ("^D", t!("help.key.half_page_down").to_string()),
+                    ("^U", t!("help.key.half_page_up").to_string()),
+                    ("^F", t!("help.key.full_page_down").to_string()),
+                    ("^B", t!("help.key.full_page_up").to_string()),
+                    ("^E", t!("help.key.one_line_down").to_string()),
+                    ("^Y", t!("help.key.one_line_up").to_string()),
                 ],
             ),
             (
-                "View",
+                t!("help.section.view").to_string(),
                 vec![
-                    ("Enter", "Toggle expand"),
-                    ("^O", "Expand/collapse all"),
-                    ("y", "Yank (copy) line"),
+                    ("Enter", t!("help.key.toggle_expand").to_string()),
+                    ("^O", t!("help.key.expand_collapse_all").to_string()),
+                    ("y", t!("help.key.yank_copy_line").to_string()),
                 ],
             ),
             (
-                "Filter",
+                t!("help.section.filter").to_string(),
                 vec![
-                    ("/", "Start filter input"),
-                    ("Esc", "Clear filter"),
-                    ("", "Query: |= \"str\" |~ /re/"),
-                    ("", "      | key = \"val\""),
-                    ("", "      | line_format \"{{ .k }}\""),
+                    ("/", t!("help.key.start_filter_input").to_string()),
+                    ("Esc", t!("help.key.clear_filter").to_string()),
+                    ("", "Query: |= \"str\" |~ /re/".to_string()),
+                    ("", "      | key = \"val\"".to_string()),
+                    ("", "      | line_format \"{{ .k }}\"".to_string()),
                 ],
             ),
-            ("Other", vec![("^G", "Help"), ("^X", "Exit logq")]),
+            (
+                t!("help.section.other").to_string(),
+                vec![
+                    ("^G", t!("help.key.help").to_string()),
+                    ("^X", t!("help.key.exit_logq").to_string()),
+                ],
+            ),
         ];
 
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         for (section, bindings) in &entries {
             lines.push(Line::from(vec![Span::styled(
-                section.to_string(),
+                section.clone(),
                 section_style,
             )]));
             for (key, desc) in bindings {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<12}", key), key_style),
-                    Span::raw(*desc),
+                    Span::raw(desc.clone()),
                 ]));
             }
             lines.push(Line::from(""));
         }
         lines.push(Line::from(vec![Span::styled(
-            "Press Esc or ^G to close".to_string(),
+            t!("help.press_esc_to_close").to_string(),
             dim,
         )]));
 
@@ -1946,7 +1957,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(Span::styled(" logq help ", key_style));
+            .title(Span::styled(t!("help.title").to_string(), key_style));
         let inner = block.inner(help_area);
         frame.render_widget(block, help_area);
         frame.render_widget(Paragraph::new(Text::from(lines)), inner);
@@ -1959,37 +1970,70 @@ impl App {
                     [
                         ShortcutItem {
                             key: "^R",
-                            desc: "Next match",
+                            desc: t!("shortcut.next_match").to_string(),
                         },
                         ShortcutItem {
                             key: "^G",
-                            desc: "Cancel search",
+                            desc: t!("shortcut.cancel_search").to_string(),
                         },
                         ShortcutItem {
                             key: "Enter",
-                            desc: "Apply filter",
+                            desc: t!("shortcut.apply_filter").to_string(),
                         },
                         ShortcutItem {
                             key: "Esc",
-                            desc: "Accept match",
+                            desc: t!("shortcut.accept_match").to_string(),
                         },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
                     ],
                     [
                         ShortcutItem {
                             key: "Bksp",
-                            desc: "Delete char",
+                            desc: t!("shortcut.delete_char").to_string(),
                         },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
                     ],
                     8,
                 )
@@ -1998,43 +2042,70 @@ impl App {
                     [
                         ShortcutItem {
                             key: "Enter",
-                            desc: "Apply filter",
+                            desc: t!("shortcut.apply_filter").to_string(),
                         },
                         ShortcutItem {
                             key: "Up/Dn",
-                            desc: "History",
+                            desc: t!("shortcut.history").to_string(),
                         },
                         ShortcutItem {
                             key: "^R",
-                            desc: "Search hist",
+                            desc: t!("shortcut.search_hist").to_string(),
                         },
                         ShortcutItem {
                             key: "Esc",
-                            desc: "Cancel",
+                            desc: t!("shortcut.cancel").to_string(),
                         },
                         ShortcutItem {
                             key: "^G",
-                            desc: "Help",
+                            desc: t!("shortcut.cancel_search").to_string(),
                         },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
                     ],
                     [
                         ShortcutItem {
                             key: "Bksp",
-                            desc: "Delete char",
+                            desc: t!("shortcut.delete_char").to_string(),
                         },
                         ShortcutItem {
                             key: "^C",
-                            desc: "Cancel",
+                            desc: t!("shortcut.cancel").to_string(),
                         },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
-                        ShortcutItem { key: "", desc: "" },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
+                        ShortcutItem {
+                            key: "",
+                            desc: String::new(),
+                        },
                     ],
                     8,
                 )
@@ -2044,69 +2115,69 @@ impl App {
                 [
                     ShortcutItem {
                         key: "j",
-                        desc: "Move down",
+                        desc: t!("help.key.move_down").to_string(),
                     },
                     ShortcutItem {
                         key: "k",
-                        desc: "Move up",
+                        desc: t!("help.key.move_up").to_string(),
                     },
                     ShortcutItem {
                         key: "Enter",
-                        desc: "Toggle expand",
+                        desc: t!("help.key.toggle_expand").to_string(),
                     },
                     ShortcutItem {
                         key: "/",
-                        desc: "Filter lines",
+                        desc: t!("shortcut.filter_lines").to_string(),
                     },
                     ShortcutItem {
                         key: "G",
-                        desc: "Jump to end",
+                        desc: t!("help.key.jump_to_end").to_string(),
                     },
                     ShortcutItem {
                         key: "Esc",
-                        desc: "Clear filter",
+                        desc: t!("help.key.clear_filter").to_string(),
                     },
                     ShortcutItem {
                         key: "^X",
-                        desc: "Exit logq",
+                        desc: t!("help.key.exit_logq").to_string(),
                     },
                     ShortcutItem {
                         key: "gg",
-                        desc: "Jump to top",
+                        desc: t!("help.key.jump_to_top").to_string(),
                     },
                 ],
                 [
                     ShortcutItem {
                         key: "^D",
-                        desc: "Half pg down",
+                        desc: t!("shortcut.half_pg_down").to_string(),
                     },
                     ShortcutItem {
                         key: "^U",
-                        desc: "Half pg up",
+                        desc: t!("shortcut.half_pg_up").to_string(),
                     },
                     ShortcutItem {
                         key: "^O",
-                        desc: "Expand all",
+                        desc: t!("shortcut.expand_all").to_string(),
                     },
                     ShortcutItem {
                         key: "^B",
-                        desc: "Full pg up",
+                        desc: t!("shortcut.full_pg_up").to_string(),
                     },
                     ShortcutItem {
                         key: "^E",
-                        desc: "One line down",
+                        desc: t!("shortcut.one_line_down").to_string(),
                     },
                     ShortcutItem {
                         key: "^Y",
-                        desc: "One line up",
+                        desc: t!("shortcut.one_line_up").to_string(),
                     },
                     ShortcutItem {
                         key: "^F",
-                        desc: "Full pg down",
+                        desc: t!("shortcut.full_pg_down").to_string(),
                     },
                     ShortcutItem {
                         key: "^G",
-                        desc: "Help",
+                        desc: t!("help.key.help").to_string(),
                     },
                 ],
                 8,

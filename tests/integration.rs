@@ -20,6 +20,7 @@ impl TestApp {
     }
 
     fn new_with_size(max_lines: usize, width: u16, height: u16) -> Self {
+        rust_i18n::set_locale("en");
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).unwrap();
         let app = App::new(max_lines);

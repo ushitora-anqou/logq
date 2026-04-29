@@ -32,7 +32,14 @@
 
         toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
-        src = craneLib.cleanCargoSource ./.;
+        src = let
+          cargoSrc = craneLib.cleanCargoSource ./.;
+        in lib.sourceByRegex cargoSrc [
+          "Cargo\.(toml|lock)" "src" "src/.*" "rust-toolchain(\.toml)?"
+          "locales" "locales/.*\.yml"
+          "\.cargo" "\.cargo/.*"
+          "deny\.toml"
+        ];
 
         # Common arguments can be set here to avoid repeating them later
         commonArgs = {

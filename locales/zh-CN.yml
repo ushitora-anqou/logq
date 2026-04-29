@@ -1,0 +1,78 @@
+_version: 1
+
+# Help overlay sections
+help.section.navigation: "导航"
+help.section.view: "视图"
+help.section.filter: "过滤"
+help.section.other: "其他"
+
+# Help overlay key descriptions
+help.key.move_down: "向下移动"
+help.key.move_up: "向上移动"
+help.key.jump_to_end: "跳到末尾"
+help.key.jump_to_top: "跳到顶部"
+help.key.half_page_down: "下半页"
+help.key.half_page_up: "上半页"
+help.key.full_page_down: "下一页"
+help.key.full_page_up: "上一页"
+help.key.one_line_down: "下一行"
+help.key.one_line_up: "上一行"
+help.key.toggle_expand: "展开/折叠"
+help.key.expand_collapse_all: "全部展开/折叠"
+help.key.yank_copy_line: "复制行"
+help.key.start_filter_input: "开始过滤输入"
+help.key.clear_filter: "清除过滤"
+help.key.help: "帮助"
+help.key.exit_logq: "退出 logq"
+help.press_esc_to_close: "按 Esc 或 ^G 关闭"
+help.title: " logq 帮助 "
+
+# Shortcut bar - common
+shortcut.next_match: "下一个匹配"
+shortcut.cancel_search: "取消搜索"
+shortcut.apply_filter: "应用过滤"
+shortcut.accept_match: "接受匹配"
+shortcut.delete_char: "删除字符"
+shortcut.history: "历史"
+shortcut.search_hist: "搜索历史"
+shortcut.cancel: "取消"
+
+# Shortcut bar - normal mode
+shortcut.filter_lines: "过滤行"
+shortcut.half_pg_down: "半页下"
+shortcut.half_pg_up: "半页上"
+shortcut.expand_all: "全部展开"
+shortcut.full_pg_up: "整页上"
+shortcut.one_line_down: "一行下"
+shortcut.one_line_up: "一行上"
+shortcut.full_pg_down: "整页下"
+
+# Status bar
+status.error_prefix: "错误: "
+status.exited: "已退出"
+status.follow: "跟随"
+status.scroll: "滚动"
+status.total: "(共 %{count} 条)"
+
+# Input line
+input.reverse_i_search: "(反向搜索)"
+input.failed_reverse_i_search: "(反向搜索 失败)"
+
+# Titlebar
+titlebar.filter_prefix: "[过滤器: %{query}]"
+
+# Filter query parser errors
+filter.error.expected_dot_after_brace: "line_format 模板中 '{{' 后需要 '.'"
+filter.error.empty_key: "line_format 模板中的键为空"
+filter.error.unterminated_brace: "line_format 模板中的 {{ 未闭合"
+filter.error.expected_key_name: "位置 %{pos} 需要键名"
+filter.error.expected_json_operator: "位置 %{pos} 需要运算符 = != =~ !~"
+filter.error.expected_value: "位置 %{pos} 需要值"
+filter.error.expected_operator: "位置 %{pos} 需要运算符"
+filter.error.expected_text_operator: "位置 %{pos} 需要运算符 |= |~ != !~"
+filter.error.expected_quote: "位置 %{pos} 需要 '\"'"
+filter.error.unterminated_string: "字符串未结束"
+filter.error.unterminated_escape: "转义未结束"
+filter.error.invalid_regex: "无效正则表达式: %{err}"
+filter.error.invalid_number: "无效数字: %{num}"
+filter.error.expected_paren: "需要 ')'"

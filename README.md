@@ -16,6 +16,7 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
 - **Memory-bounded**: Configurable line limit discards oldest lines when exceeded
+- **Internationalization**: UI text (help, shortcuts, status bar, error messages) is automatically displayed in the system locale language. Supported languages: English, Japanese, Chinese (simplified)
 
 ## Installation
 

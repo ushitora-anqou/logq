@@ -1,0 +1,78 @@
+_version: 1
+
+# Help overlay sections
+help.section.navigation: "ナビゲーション"
+help.section.view: "表示"
+help.section.filter: "フィルタ"
+help.section.other: "その他"
+
+# Help overlay key descriptions
+help.key.move_down: "下に移動"
+help.key.move_up: "上に移動"
+help.key.jump_to_end: "末尾にジャンプ"
+help.key.jump_to_top: "先頭にジャンプ"
+help.key.half_page_down: "半ページ下"
+help.key.half_page_up: "半ページ上"
+help.key.full_page_down: "1ページ下"
+help.key.full_page_up: "1ページ上"
+help.key.one_line_down: "1行下"
+help.key.one_line_up: "1行上"
+help.key.toggle_expand: "展開/折りたたみ"
+help.key.expand_collapse_all: "すべて展開/折りたたみ"
+help.key.yank_copy_line: "行をコピー"
+help.key.start_filter_input: "フィルタ入力開始"
+help.key.clear_filter: "フィルタをクリア"
+help.key.help: "ヘルプ"
+help.key.exit_logq: "logqを終了"
+help.press_esc_to_close: "Esc または ^G で閉じる"
+help.title: " logq ヘルプ "
+
+# Shortcut bar - common
+shortcut.next_match: "次の一致"
+shortcut.cancel_search: "検索を取消"
+shortcut.apply_filter: "フィルタ適用"
+shortcut.accept_match: "一致を採用"
+shortcut.delete_char: "文字削除"
+shortcut.history: "履歴"
+shortcut.search_hist: "履歴検索"
+shortcut.cancel: "取消"
+
+# Shortcut bar - normal mode
+shortcut.filter_lines: "行をフィルタ"
+shortcut.half_pg_down: "半頁下"
+shortcut.half_pg_up: "半頁上"
+shortcut.expand_all: "すべて展開"
+shortcut.full_pg_up: "全頁上"
+shortcut.one_line_down: "1行下"
+shortcut.one_line_up: "1行上"
+shortcut.full_pg_down: "全頁下"
+
+# Status bar
+status.error_prefix: "エラー: "
+status.exited: "終了"
+status.follow: "追従"
+status.scroll: "スクロール"
+status.total: "(%{count} 件)"
+
+# Input line
+input.reverse_i_search: "(逆方向検索)"
+input.failed_reverse_i_search: "(逆方向検索 失敗)"
+
+# Titlebar
+titlebar.filter_prefix: "[フィルタ: %{query}]"
+
+# Filter query parser errors
+filter.error.expected_dot_after_brace: "line_format テンプレートの '{{' の後に '.' が必要です"
+filter.error.empty_key: "line_format テンプレートのキーが空です"
+filter.error.unterminated_brace: "line_format テンプレートの {{ が閉じられていません"
+filter.error.expected_key_name: "位置 %{pos} にキー名が必要です"
+filter.error.expected_json_operator: "位置 %{pos} に演算子 = != =~ !~ が必要です"
+filter.error.expected_value: "位置 %{pos} に値が必要です"
+filter.error.expected_operator: "位置 %{pos} に演算子が必要です"
+filter.error.expected_text_operator: "位置 %{pos} に演算子 |= |~ != !~ が必要です"
+filter.error.expected_quote: "位置 %{pos} に '\"' が必要です"
+filter.error.unterminated_string: "文字列が終了していません"
+filter.error.unterminated_escape: "エスケープが終了していません"
+filter.error.invalid_regex: "不正な正規表現: %{err}"
+filter.error.invalid_number: "不正な数値: %{num}"
+filter.error.expected_paren: "')' が必要です"
