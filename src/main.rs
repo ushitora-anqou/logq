@@ -53,7 +53,22 @@ fn redirect_stdin_to_tty() -> io::Result<Option<File>> {
     Ok(Some(saved_stdin))
 }
 
+fn detect_and_set_locale() {
+    let locale = sys_locale::get_locale().unwrap_or_else(|| "en".to_string());
+    let matched = if locale.starts_with("zh_CN") || locale.starts_with("zh-Hans") {
+        "zh-CN"
+    } else {
+        match locale.split(['_', '-']).next().unwrap_or("en") {
+            "ja" => "ja",
+            _ => "en",
+        }
+    };
+    rust_i18n::set_locale(matched);
+}
+
 fn main() -> io::Result<()> {
+    detect_and_set_locale();
+
     // Ignore SIGPIPE so logq never dies from writing to a closed pipe
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
