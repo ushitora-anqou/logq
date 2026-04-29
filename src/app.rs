@@ -73,6 +73,93 @@ pub enum JsonExpr {
 pub enum FilterSegment {
     Plain(FilterCondition),
     Json(JsonExpr),
+    LineFormat(LineFormatTemplate),
+}
+
+#[derive(Debug, Clone)]
+enum TemplatePart {
+    Literal(String),
+    Key(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct LineFormatTemplate {
+    parts: Vec<TemplatePart>,
+}
+
+impl LineFormatTemplate {
+    fn format(&self, text: &str) -> Option<String> {
+        let value: Value = serde_json::from_str(text).ok()?;
+        let mut result = String::new();
+        for part in &self.parts {
+            match part {
+                TemplatePart::Literal(s) => result.push_str(s),
+                TemplatePart::Key(key) => {
+                    if let Some(v) = lookup_json_key(&value, key) {
+                        result.push_str(&json_value_to_string(v));
+                    }
+                }
+            }
+        }
+        Some(result)
+    }
+}
+
+fn parse_line_format_template(input: &str) -> Result<LineFormatTemplate, String> {
+    let mut parts = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut pos = 0;
+    let mut literal_start = 0;
+
+    while pos < len {
+        if chars[pos] == '{' && pos + 1 < len && chars[pos + 1] == '{' {
+            // Flush literal before {{
+            if literal_start < pos {
+                let s: String = chars[literal_start..pos].iter().collect();
+                parts.push(TemplatePart::Literal(s));
+            }
+            pos += 2;
+            // Skip whitespace after {{
+            while pos < len && chars[pos] == ' ' {
+                pos += 1;
+            }
+            // Expect '.'
+            if pos >= len || chars[pos] != '.' {
+                return Err("Expected '.' after '{{{'  in line_format template".to_string());
+            }
+            pos += 1;
+            let key_start = pos;
+            while pos < len
+                && (chars[pos].is_alphanumeric() || chars[pos] == '.' || chars[pos] == '_')
+            {
+                pos += 1;
+            }
+            let key: String = chars[key_start..pos].iter().collect();
+            if key.is_empty() {
+                return Err("Empty key in line_format template".to_string());
+            }
+            // Skip whitespace before }}
+            while pos < len && chars[pos] == ' ' {
+                pos += 1;
+            }
+            if pos + 1 >= len || chars[pos] != '}' || chars[pos + 1] != '}' {
+                return Err("Unterminated {{ in line_format template".to_string());
+            }
+            pos += 2;
+            parts.push(TemplatePart::Key(key));
+            literal_start = pos;
+        } else {
+            pos += 1;
+        }
+    }
+
+    if literal_start < len {
+        let s: String = chars[literal_start..len].iter().collect();
+        parts.push(TemplatePart::Literal(s));
+    }
+
+    Ok(LineFormatTemplate { parts })
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +201,17 @@ impl FilterQuery {
                 }
                 FilterSegment::Json(expr) => {
                     format!("| {}", expr.display_string_inner(false))
+                }
+                FilterSegment::LineFormat(t) => {
+                    let template_str: String = t
+                        .parts
+                        .iter()
+                        .map(|p| match p {
+                            TemplatePart::Literal(s) => s.clone(),
+                            TemplatePart::Key(k) => format!("{{{{ .{} }}}}", k),
+                        })
+                        .collect();
+                    format!("| line_format \"{}\"", template_str)
                 }
             })
             .collect::<Vec<_>>()
@@ -442,12 +540,20 @@ fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
                     json_key: None,
                 }));
             } else {
-                // JSON key group: | followed by expression with and/or/parens
+                // Check for | line_format or JSON key group
                 pos += 1; // skip '|'
                 skip_whitespace(&chars, &mut pos, len);
 
-                let expr = parse_json_or_expr(&chars, &mut pos, len)?;
-                segments.push(FilterSegment::Json(expr));
+                if is_keyword(&chars, pos, len, "line_format") {
+                    pos += "line_format".len();
+                    skip_whitespace(&chars, &mut pos, len);
+                    let template_str = parse_quoted_string(&chars, &mut pos, len)?;
+                    let template = parse_line_format_template(&template_str)?;
+                    segments.push(FilterSegment::LineFormat(template));
+                } else {
+                    let expr = parse_json_or_expr(&chars, &mut pos, len)?;
+                    segments.push(FilterSegment::Json(expr));
+                }
             }
         } else if chars[pos] == '!' {
             // Plain text operators: != or !~
@@ -665,6 +771,7 @@ impl App {
             Some(query) => query.segments.iter().all(|seg| match seg {
                 FilterSegment::Plain(c) => self.plain_condition_matches(text, c),
                 FilterSegment::Json(expr) => self.json_expr_matches(text, expr),
+                FilterSegment::LineFormat(_) => true,
             }),
             None => true,
         }
@@ -745,6 +852,24 @@ impl App {
         }
     }
 
+    fn active_line_format(&self) -> Option<&LineFormatTemplate> {
+        self.active_filter_query().and_then(|q| {
+            q.segments.iter().find_map(|seg| match seg {
+                FilterSegment::LineFormat(t) => Some(t),
+                _ => None,
+            })
+        })
+    }
+
+    fn display_text_for(&self, idx: usize) -> String {
+        if let Some(template) = self.active_line_format()
+            && let Some(formatted) = template.format(&self.lines[idx].text)
+        {
+            return formatted;
+        }
+        self.lines[idx].text.clone()
+    }
+
     fn visible_height(&self, area: &Rect) -> usize {
         // Titlebar(1) + status(1) + shortcuts(2) = 4; during filter input add input(1) = 5
         let overhead: usize = if self.filter_input.is_some() { 5 } else { 4 };
@@ -759,8 +884,7 @@ impl App {
         if !self.is_expanded(lines_idx) {
             return 1;
         }
-        let entry = &self.lines[lines_idx];
-        let text = highlight_line(&entry.text, &self.colors);
+        let text = highlight_line(&self.display_text_for(lines_idx), &self.colors);
         wrapped_text_height(&text, content_width)
     }
 
@@ -1475,7 +1599,8 @@ impl App {
             };
 
             if is_expanded {
-                let highlighted = highlight_line(&entry.text, &self.colors);
+                let display_text = self.display_text_for(idx);
+                let highlighted = highlight_line(&display_text, &self.colors);
                 let mut row_idx = 0usize;
                 for (i, hl_line) in highlighted.lines.into_iter().enumerate() {
                     let wrapped = wrap_line(&hl_line, content_width);
@@ -1536,8 +1661,10 @@ impl App {
             } else {
                 // Collapsed: single row
                 if skip_rows == 0 && rows_remaining > 0 {
-                    let display =
-                        truncate_str(&entry.text, content_width.saturating_sub(prefix_width));
+                    let display = truncate_str(
+                        &self.display_text_for(idx),
+                        content_width.saturating_sub(prefix_width),
+                    );
                     let content_spans = highlight_display_line(&display, &self.colors, is_selected);
                     let mut spans: Vec<Span<'static>> = vec![ts_span];
                     spans.extend(prefix_span);
@@ -1774,7 +1901,13 @@ impl App {
             ),
             (
                 "Filter",
-                vec![("/", "Start filter input"), ("Esc", "Clear filter")],
+                vec![
+                    ("/", "Start filter input"),
+                    ("Esc", "Clear filter"),
+                    ("", "Query: |= \"str\" |~ /re/"),
+                    ("", "      | key = \"val\""),
+                    ("", "      | line_format \"{{ .k }}\""),
+                ],
             ),
             ("Other", vec![("^G", "Help"), ("^X", "Exit logq")]),
         ];
@@ -4060,5 +4193,111 @@ mod tests {
         app.show_help = true;
         app.handle_help_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert!(app.show_help);
+    }
+
+    // --- line_format tests ---
+
+    #[test]
+    fn test_line_format_simple() {
+        let template = parse_line_format_template("{{ .a }} / {{ .b }}").unwrap();
+        let result = template.format(r#"{"a": 10, "b": "foo"}"#);
+        assert_eq!(result, Some("10 / foo".to_string()));
+    }
+
+    #[test]
+    fn test_line_format_single_key() {
+        let template = parse_line_format_template("{{ .name }}").unwrap();
+        let result = template.format(r#"{"name": "alice"}"#);
+        assert_eq!(result, Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_line_format_literal_only() {
+        let template = parse_line_format_template("hello world").unwrap();
+        let result = template.format(r#"{"a": 1}"#);
+        assert_eq!(result, Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_line_format_missing_key_is_empty() {
+        let template = parse_line_format_template("{{ .missing }}").unwrap();
+        let result = template.format(r#"{"a": 1}"#);
+        assert_eq!(result, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_line_format_non_json_returns_none() {
+        let template = parse_line_format_template("{{ .a }}").unwrap();
+        let result = template.format("plain text");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_line_format_nested_key() {
+        let template = parse_line_format_template("{{ .user.name }}").unwrap();
+        let result = template.format(r#"{"user": {"name": "bob"}}"#);
+        assert_eq!(result, Some("bob".to_string()));
+    }
+
+    #[test]
+    fn test_line_format_mixed_literal_and_keys() {
+        let template = parse_line_format_template("name={{ .name }} age={{ .age }}").unwrap();
+        let result = template.format(r#"{"name": "alice", "age": 30}"#);
+        assert_eq!(result, Some("name=alice age=30".to_string()));
+    }
+
+    #[test]
+    fn test_line_format_boolean_and_null() {
+        let template = parse_line_format_template("{{ .active }} {{ .result }}").unwrap();
+        let result = template.format(r#"{"active": true, "result": null}"#);
+        assert_eq!(result, Some("true null".to_string()));
+    }
+
+    #[test]
+    fn test_parse_line_format_in_query() {
+        let query = parse_filter_query(r#"| line_format "{{ .a }}""#).unwrap();
+        assert!(
+            query
+                .segments
+                .iter()
+                .any(|s| matches!(s, FilterSegment::LineFormat(_)))
+        );
+    }
+
+    #[test]
+    fn test_parse_line_format_combined_with_filter() {
+        let query = parse_filter_query(r#"|= "foo" | line_format "{{ .bar }}""#).unwrap();
+        assert_eq!(query.segments.len(), 2);
+        assert!(matches!(query.segments[0], FilterSegment::Plain(_)));
+        assert!(matches!(query.segments[1], FilterSegment::LineFormat(_)));
+    }
+
+    #[test]
+    fn test_parse_line_format_with_json_filter() {
+        let query = parse_filter_query(r#"| name = "alice" | line_format "{{ .age }}""#).unwrap();
+        assert_eq!(query.segments.len(), 2);
+        assert!(matches!(query.segments[0], FilterSegment::Json(_)));
+        assert!(matches!(query.segments[1], FilterSegment::LineFormat(_)));
+    }
+
+    #[test]
+    fn test_line_format_segment_is_not_filter() {
+        // line_format should not affect filtering — it's a display directive
+        let mut app = App::new(100);
+        app.add_line(r#"{"a": 10, "b": "foo"}"#.to_string());
+        app.add_line("plain text".to_string());
+        app.filter_query = Some(parse_filter_query(r#"| line_format "{{ .a }}""#).unwrap());
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_line_format_unterminated_template() {
+        assert!(parse_line_format_template("{{ .a").is_err());
+    }
+
+    #[test]
+    fn test_line_format_empty_key() {
+        assert!(parse_line_format_template("{{ . }}").is_err());
     }
 }

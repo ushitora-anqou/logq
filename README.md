@@ -11,6 +11,7 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **JSON syntax highlighting**: Color-coded keys, strings, numbers, booleans, and null values
 - **Inline expand**: Press Enter to expand a line into a readable, indented JSON view inline; press `C-o` to expand/collapse all lines
 - **Query-based filtering**: Type `/` to enter filter mode with a structured query language supporting literal contains, regex match, and their negations, combinable with AND semantics; JSON key/value conditions support `and`/`or` with parentheses
+- **Line formatting**: Use `| line_format "{{ .key }}"` to customize how JSON lines are displayed, substituting field values into a template
 - **Breadcrumb bar**: Shows current context (active filter) at the top of the screen
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
@@ -107,6 +108,18 @@ JSON key conditions support `and`, `or`, and parentheses for grouping:
 | `\| (level = "error" or level = "warn") and active = true` | Grouped with parens |
 
 Plain-text conditions (`|=`, `!=`, `|~`, `!~`) cannot use `and`/`or` — they are always ANDed at the top level.
+
+### Line formatting
+
+Use `| line_format "template"` to customize how JSON lines are displayed. The template uses `{{ .key }}` placeholders that are replaced with the corresponding JSON field values. Nested keys are supported with dot notation.
+
+| Query                                      | Meaning                                              |
+|--------------------------------------------|------------------------------------------------------|
+| `\| line_format "{{ .msg }}"`               | Display only the `msg` field                        |
+| `\| line_format "{{ .a }} / {{ .b }}"`      | Display `a` and `b` fields separated by ` / `       |
+| `\|= "error" \| line_format "{{ .msg }}"`  | Filter for "error" AND format output to show `msg`  |
+
+Non-JSON lines are displayed as-is. Missing keys are replaced with empty strings.
 
 ## Examples
 
