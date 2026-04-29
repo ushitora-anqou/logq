@@ -17,6 +17,16 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
 - **Memory-bounded**: Configurable line limit discards oldest lines when exceeded
 
+## Installation
+
+### Nix
+
+Run directly without installing:
+
+```sh
+nix run github:ushitora-anqou/logq -- [options]
+```
+
 ## Usage
 
 ### Read from stdin (pipe)
