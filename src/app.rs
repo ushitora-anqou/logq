@@ -179,8 +179,7 @@ impl App {
                 .map(|&i| i - 1)
                 .collect();
         }
-        self.filtered_indices_cache = None;
-        self.row_layout_cache = None;
+        self.invalidate_caches();
         // auto_scroll: selected/scroll_offset are updated in update_auto_scroll()
     }
 
@@ -318,6 +317,11 @@ impl App {
         // Titlebar(1) + status(1) + shortcuts(2) = 4; during filter input add input(1) = 5
         let overhead: usize = if self.filter_input.is_some() { 5 } else { 4 };
         (area.height as usize).saturating_sub(overhead)
+    }
+
+    fn invalidate_caches(&mut self) {
+        self.filtered_indices_cache = None;
+        self.row_layout_cache = None;
     }
 
     fn is_expanded(&self, lines_idx: usize) -> bool {
@@ -478,14 +482,12 @@ impl App {
                 Ok(query) if !query.segments.is_empty() => {
                     self.live_filter_query = Some(query);
                     self.live_filter_error = None;
-                    self.filtered_indices_cache = None;
-                    self.row_layout_cache = None;
+                    self.invalidate_caches();
                 }
                 Ok(_) => {
                     self.live_filter_query = None;
                     self.live_filter_error = None;
-                    self.filtered_indices_cache = None;
-                    self.row_layout_cache = None;
+                    self.invalidate_caches();
                 }
                 Err(msg) => {
                     // Keep the previous live_filter_query so results stay filtered
@@ -579,8 +581,7 @@ impl App {
                     self.filter_error = None;
                     self.live_filter_query = None;
                     self.live_filter_error = None;
-                    self.filtered_indices_cache = None;
-                    self.row_layout_cache = None;
+                    self.invalidate_caches();
                     if self.filter_history.last() != Some(&value) {
                         self.filter_history.push(value);
                         if self.filter_history.len() > 100 {
@@ -593,8 +594,7 @@ impl App {
                     self.filter_error = None;
                     self.live_filter_query = None;
                     self.live_filter_error = None;
-                    self.filtered_indices_cache = None;
-                    self.row_layout_cache = None;
+                    self.invalidate_caches();
                 }
                 Err(msg) => {
                     self.filter_error = Some(msg.clone());
@@ -630,8 +630,7 @@ impl App {
         self.history_search_original_input = None;
         self.history_search_failed = false;
         self.history_search_start = None;
-        self.filtered_indices_cache = None;
-        self.row_layout_cache = None;
+        self.invalidate_caches();
     }
 
     fn handle_history_up(&mut self) {
@@ -852,8 +851,7 @@ impl App {
             (KeyCode::Esc, _) => {
                 self.pending_g = false;
                 self.filter_query = None;
-                self.filtered_indices_cache = None;
-                self.row_layout_cache = None;
+                self.invalidate_caches();
             }
             (KeyCode::Char('y'), _) => {
                 self.pending_g = false;
