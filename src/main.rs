@@ -120,51 +120,61 @@ fn main() -> io::Result<()> {
     app.load_history();
     let result = run_app(&mut terminal, &mut app, rx);
 
-    // Command mode: kill spawned child process group
+    cleanup_input_reader(child_pid, task_handle, &rt);
+
+    // Save state and restore terminal before any signal-based cleanup
+    app.save_history();
+    ratatui::restore();
+
+    if is_pipe_mode {
+        terminate_pipeline_upstream();
+    }
+
+    result
+}
+
+/// Terminate the spawned child process and await the reader task.
+/// On command mode the entire process group is signalled (SIGTERM, then
+/// SIGKILL after a 1s grace period); on stdin/pipe mode the reader task
+/// is simply aborted.
+fn cleanup_input_reader(
+    child_pid: Option<u32>,
+    task_handle: Option<tokio::task::JoinHandle<()>>,
+    rt: &tokio::runtime::Runtime,
+) {
     if let Some(pid) = child_pid {
         let pgid = pid as libc::pid_t;
-        // Send SIGTERM to the entire process group
         unsafe { libc::kill(-pgid, libc::SIGTERM) };
         rt.block_on(async {
             if let Some(handle) = task_handle {
                 tokio::select! {
                     _ = handle => {}
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        // Send SIGKILL to the entire process group
                         unsafe { libc::kill(-pgid, libc::SIGKILL) };
-                        // Give exit monitor time to reap the child
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 }
             }
         });
     } else if let Some(handle) = task_handle {
-        // Pipe/stdin mode: abort the reader task
         handle.abort();
     }
+}
 
-    // Save state and restore terminal before any signal-based cleanup
-    app.save_history();
-    ratatui::restore();
-
-    // Pipe mode: terminate the upstream command in the pipeline.
-    // After abort(), the pipe read end is closed and the upstream should
-    // get SIGPIPE. As a fallback, also send SIGTERM to the process group
-    // (handles commands that ignore SIGPIPE or haven't written yet).
-    if is_pipe_mode {
-        let pgid = unsafe { libc::getpgrp() };
-        // Protect ourselves from the SIGTERM we're about to send
-        unsafe {
-            libc::signal(libc::SIGTERM, libc::SIG_IGN);
-            libc::kill(-pgid, libc::SIGTERM);
-        }
-        std::thread::sleep(Duration::from_millis(100));
-        unsafe {
-            libc::signal(libc::SIGTERM, libc::SIG_DFL);
-        }
+/// Pipe mode: terminate the upstream command in the pipeline.
+/// After the reader task aborts the pipe is closed and the upstream should
+/// receive SIGPIPE. As a fallback, also send SIGTERM to the process group
+/// (handles commands that ignore SIGPIPE or haven't written yet).
+fn terminate_pipeline_upstream() {
+    let pgid = unsafe { libc::getpgrp() };
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        libc::kill(-pgid, libc::SIGTERM);
     }
-
-    result
+    std::thread::sleep(Duration::from_millis(100));
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+    }
 }
 
 fn run_app(
