@@ -18,19 +18,21 @@ pub struct InputLine {
     pub source: LineSource,
 }
 
+/// A spawned line reader producing InputLine values.
+/// Holds the receiver, optional child PID (when running a command), and
+/// the optional background task handle for the reader/exit-monitor.
+pub struct InputReader {
+    pub rx: mpsc::UnboundedReceiver<InputLine>,
+    pub child_pid: Option<u32>,
+    pub task_handle: Option<JoinHandle<()>>,
+}
+
 /// Spawns a line reader that sends each line through the channel.
 /// For stdin mode, reads from the given file (or tokio::stdin if None).
 /// For command mode, spawns the command and reads both stdout and stderr.
 /// Returns (receiver, child_pid, task_handle).
 /// The task_handle is the exit monitor (command mode) or reader (stdin mode).
-pub fn spawn_line_reader(
-    command: Option<Vec<String>>,
-    stdin_file: Option<File>,
-) -> (
-    mpsc::UnboundedReceiver<InputLine>,
-    Option<u32>,
-    Option<JoinHandle<()>>,
-) {
+pub fn spawn_line_reader(command: Option<Vec<String>>, stdin_file: Option<File>) -> InputReader {
     let (tx, rx) = mpsc::unbounded_channel();
 
     match command {
@@ -86,7 +88,11 @@ pub fn spawn_line_reader(
                 });
             });
 
-            (rx, Some(pid), Some(exit_handle))
+            InputReader {
+                rx,
+                child_pid: Some(pid),
+                task_handle: Some(exit_handle),
+            }
         }
         None => {
             let handle = match stdin_file {
@@ -100,7 +106,11 @@ pub fn spawn_line_reader(
                     tokio::spawn(read_lines_with_source(reader, tx, LineSource::Stdout))
                 }
             };
-            (rx, None, Some(handle))
+            InputReader {
+                rx,
+                child_pid: None,
+                task_handle: Some(handle),
+            }
         }
     }
 }

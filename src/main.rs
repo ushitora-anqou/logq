@@ -94,7 +94,11 @@ fn main() -> io::Result<()> {
     let is_pipe_mode = saved_stdin.is_some() && command.is_none() && cli.file.is_none();
 
     let mut terminal = ratatui::init();
-    let (rx, child_pid, task_handle) = if let Some(file_path) = &cli.file {
+    let logq::input::InputReader {
+        rx,
+        child_pid,
+        task_handle,
+    } = if let Some(file_path) = &cli.file {
         let file = File::open(file_path).unwrap_or_else(|e| {
             eprintln!("error: cannot open file '{}': {}", file_path, e);
             std::process::exit(1);
@@ -103,7 +107,11 @@ fn main() -> io::Result<()> {
     } else if command.is_none() && saved_stdin.is_none() {
         // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
         let (_, rx) = tokio::sync::mpsc::unbounded_channel();
-        (rx, None, None)
+        logq::input::InputReader {
+            rx,
+            child_pid: None,
+            task_handle: None,
+        }
     } else {
         logq::input::spawn_line_reader(command, saved_stdin)
     };
