@@ -7,3 +7,4 @@ pub mod app;
 pub mod filter;
 pub mod highlight;
 pub mod input;
+pub mod render;
