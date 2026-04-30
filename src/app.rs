@@ -66,6 +66,20 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
     path
 }
 
+#[derive(Default)]
+struct RenderCache {
+    filtered_indices: Option<Vec<usize>>,
+    /// (content_width, row_layout, prefix_sums)
+    row_layout: Option<(usize, Vec<usize>, Vec<usize>)>,
+}
+
+impl RenderCache {
+    fn invalidate(&mut self) {
+        self.filtered_indices = None;
+        self.row_layout = None;
+    }
+}
+
 pub struct App {
     pub lines: Vec<LogEntry>,
     pub selected: usize,
@@ -86,11 +100,7 @@ pub struct App {
     history_search_original_input: Option<tui_input::Input>,
     history_search_failed: bool,
     history_search_start: Option<usize>,
-    filtered_indices_cache: Option<Vec<usize>>,
-    // Cached row heights and prefix sums for the currently active filtered indices,
-    // keyed by content_width. prefix_sums has len() == row_layout.len() + 1 so that
-    // prefix_sums[i] == sum(row_layout[..i]) and prefix_sums.last() == total rows.
-    row_layout_cache: Option<(usize, Vec<usize>, Vec<usize>)>,
+    cache: RenderCache,
     pending_g: bool,
     pub expanded: HashSet<usize>,
     pub expand_all: bool,
@@ -122,8 +132,7 @@ impl App {
             history_search_original_input: None,
             history_search_failed: false,
             history_search_start: None,
-            filtered_indices_cache: None,
-            row_layout_cache: None,
+            cache: RenderCache::default(),
             pending_g: false,
             expanded: HashSet::new(),
             expand_all: false,
@@ -276,10 +285,10 @@ impl App {
     }
 
     fn filtered_indices(&mut self) -> Vec<usize> {
-        if self.filtered_indices_cache.is_none() {
-            self.filtered_indices_cache = Some(self.compute_filtered_indices());
+        if self.cache.filtered_indices.is_none() {
+            self.cache.filtered_indices = Some(self.compute_filtered_indices());
         }
-        self.filtered_indices_cache.as_ref().unwrap().clone()
+        self.cache.filtered_indices.as_ref().unwrap().clone()
     }
 
     fn compute_filtered_indices(&self) -> Vec<usize> {
@@ -320,8 +329,7 @@ impl App {
     }
 
     fn invalidate_caches(&mut self) {
-        self.filtered_indices_cache = None;
-        self.row_layout_cache = None;
+        self.cache.invalidate();
     }
 
     fn is_expanded(&self, lines_idx: usize) -> bool {
@@ -347,7 +355,7 @@ impl App {
     /// given content_width. The cache is invalidated whenever lines, expansion state,
     /// or the filter changes.
     fn cached_row_layout(&mut self, content_width: usize) -> (&[usize], &[usize]) {
-        let needs_recompute = match &self.row_layout_cache {
+        let needs_recompute = match &self.cache.row_layout {
             Some((cached_w, _, _)) => *cached_w != content_width,
             None => true,
         };
@@ -361,9 +369,9 @@ impl App {
                 acc = acc.saturating_add(h);
                 prefix_sums.push(acc);
             }
-            self.row_layout_cache = Some((content_width, row_layout, prefix_sums));
+            self.cache.row_layout = Some((content_width, row_layout, prefix_sums));
         }
-        let cache = self.row_layout_cache.as_ref().unwrap();
+        let cache = self.cache.row_layout.as_ref().unwrap();
         (&cache.1, &cache.2)
     }
 
@@ -825,7 +833,7 @@ impl App {
                 } else {
                     self.expanded.insert(self.selected);
                 }
-                self.row_layout_cache = None;
+                self.cache.row_layout = None;
             }
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
@@ -838,7 +846,7 @@ impl App {
                         self.expanded.insert(idx);
                     }
                 }
-                self.row_layout_cache = None;
+                self.cache.row_layout = None;
             }
             (KeyCode::Char('/'), _) => {
                 self.pending_g = false;
@@ -1799,7 +1807,7 @@ mod tests {
         });
         assert_eq!(app.filtered_indices().len(), 0);
         app.filter_query = None;
-        app.filtered_indices_cache = None;
+        app.cache.filtered_indices = None;
         assert_eq!(app.filtered_indices().len(), 1);
     }
 
@@ -2341,7 +2349,7 @@ mod tests {
         {
             let app = App {
                 filter_history: vec!["|= \"foo\"".to_string(), "|= \"bar\"".to_string()],
-                filtered_indices_cache: None,
+                cache: RenderCache::default(),
                 ..App::new(100)
             };
             let content = app.filter_history.join("\n");
@@ -3175,7 +3183,7 @@ mod tests {
                 json_key: None,
             })],
         });
-        app.filtered_indices_cache = None;
+        app.cache.filtered_indices = None;
 
         // Start typing a new filter query
         app.filter_input = Some(tui_input::Input::new(r#"|= "bar""#.to_string()));
@@ -3513,7 +3521,7 @@ mod tests {
 
         // Filter should match the text content, not the prefix
         app.filter_query = Some(parse_filter_query("|= \"error\"").unwrap());
-        app.filtered_indices_cache = None;
+        app.cache.filtered_indices = None;
 
         let filtered = app.filtered_indices();
         assert_eq!(filtered.len(), 1);
