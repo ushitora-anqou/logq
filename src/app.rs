@@ -655,6 +655,10 @@ pub struct App {
     history_search_failed: bool,
     history_search_start: Option<usize>,
     filtered_indices_cache: Option<Vec<usize>>,
+    // Cached row heights and prefix sums for the currently active filtered indices,
+    // keyed by content_width. prefix_sums has len() == row_layout.len() + 1 so that
+    // prefix_sums[i] == sum(row_layout[..i]) and prefix_sums.last() == total rows.
+    row_layout_cache: Option<(usize, Vec<usize>, Vec<usize>)>,
     pending_g: bool,
     pub expanded: HashSet<usize>,
     pub expand_all: bool,
@@ -687,6 +691,7 @@ impl App {
             history_search_failed: false,
             history_search_start: None,
             filtered_indices_cache: None,
+            row_layout_cache: None,
             pending_g: false,
             expanded: HashSet::new(),
             expand_all: false,
@@ -743,6 +748,7 @@ impl App {
                 .collect();
         }
         self.filtered_indices_cache = None;
+        self.row_layout_cache = None;
         // auto_scroll: selected/scroll_offset are updated in update_auto_scroll()
     }
 
@@ -750,13 +756,16 @@ impl App {
         if !self.auto_scroll {
             return;
         }
-        let filtered = self.filtered_indices();
-        if filtered.is_empty() {
-            return;
-        }
-        self.selected = filtered[filtered.len() - 1];
-        let row_layout = self.compute_row_layout(&filtered, content_width);
-        let total_rows = Self::total_row_count(&row_layout);
+        let last = {
+            let filtered = self.filtered_indices();
+            if filtered.is_empty() {
+                return;
+            }
+            filtered[filtered.len() - 1]
+        };
+        self.selected = last;
+        let (_, prefix_sums) = self.cached_row_layout(content_width);
+        let total_rows = *prefix_sums.last().unwrap_or(&0);
         let max_offset = total_rows.saturating_sub(visible_height);
         self.scroll_offset = max_offset;
     }
@@ -898,32 +907,40 @@ impl App {
             .collect()
     }
 
-    fn total_row_count(row_layout: &[usize]) -> usize {
-        row_layout.iter().sum()
-    }
-
-    fn entry_to_first_row(pos: usize, row_layout: &[usize]) -> usize {
-        row_layout.iter().take(pos).sum()
-    }
-
-    fn row_to_entry(row: usize, row_layout: &[usize]) -> Option<usize> {
-        let mut accumulated = 0usize;
-        for (pos, &height) in row_layout.iter().enumerate() {
-            if accumulated + height > row {
-                return Some(pos);
+    /// Returns cached row heights and prefix sums for the active filtered set at the
+    /// given content_width. The cache is invalidated whenever lines, expansion state,
+    /// or the filter changes.
+    fn cached_row_layout(&mut self, content_width: usize) -> (&[usize], &[usize]) {
+        let needs_recompute = match &self.row_layout_cache {
+            Some((cached_w, _, _)) => *cached_w != content_width,
+            None => true,
+        };
+        if needs_recompute {
+            let filtered = self.filtered_indices();
+            let row_layout = self.compute_row_layout(&filtered, content_width);
+            let mut prefix_sums = Vec::with_capacity(row_layout.len() + 1);
+            let mut acc: usize = 0;
+            prefix_sums.push(0);
+            for &h in &row_layout {
+                acc = acc.saturating_add(h);
+                prefix_sums.push(acc);
             }
-            accumulated += height;
+            self.row_layout_cache = Some((content_width, row_layout, prefix_sums));
         }
-        None
+        let cache = self.row_layout_cache.as_ref().unwrap();
+        (&cache.1, &cache.2)
     }
 
     fn ensure_selection_visible(&mut self, visible_height: usize, content_width: usize) {
-        let filtered = self.filtered_indices();
-        let Some(selected_pos) = filtered.iter().position(|&i| i == self.selected) else {
-            return;
+        let selected_pos = {
+            let filtered = self.filtered_indices();
+            match filtered.iter().position(|&i| i == self.selected) {
+                Some(p) => p,
+                None => return,
+            }
         };
-        let row_layout = self.compute_row_layout(&filtered, content_width);
-        let entry_first_row = Self::entry_to_first_row(selected_pos, &row_layout);
+        let (row_layout, prefix_sums) = self.cached_row_layout(content_width);
+        let entry_first_row = prefix_sums[selected_pos];
         let entry_height = row_layout[selected_pos];
         if self.scroll_offset > entry_first_row {
             self.scroll_offset = entry_first_row;
@@ -956,21 +973,29 @@ impl App {
         content_width: usize,
         forward: bool,
     ) {
-        let filtered = self.filtered_indices();
-        if filtered.is_empty() {
-            return;
-        }
-        let row_layout = self.compute_row_layout(&filtered, content_width);
-        let current_pos = filtered
-            .iter()
-            .position(|&i| i == self.selected)
-            .unwrap_or(0);
-        let current_row = Self::entry_to_first_row(current_pos, &row_layout);
-        let target_row = (current_row as isize + delta_rows)
-            .clamp(0, Self::total_row_count(&row_layout) as isize - 1)
-            as usize;
-        if let Some(new_pos) = Self::row_to_entry(target_row, &row_layout) {
-            self.selected = filtered[new_pos];
+        let (filtered_first_last, current_pos) = {
+            let filtered = self.filtered_indices();
+            if filtered.is_empty() {
+                return;
+            }
+            let pos = filtered
+                .iter()
+                .position(|&i| i == self.selected)
+                .unwrap_or(0);
+            (filtered.clone(), pos)
+        };
+        let (_row_layout, prefix_sums) = self.cached_row_layout(content_width);
+        let current_row = prefix_sums[current_pos];
+        let total_rows = *prefix_sums.last().unwrap_or(&0);
+        let target_row =
+            (current_row as isize + delta_rows).clamp(0, total_rows as isize - 1) as usize;
+        // Binary search prefix_sums to find entry containing target_row.
+        let new_pos = match prefix_sums.binary_search(&target_row) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        if new_pos < filtered_first_last.len() {
+            self.selected = filtered_first_last[new_pos];
             self.auto_scroll = false;
             if forward {
                 self.scroll_offset = target_row;
@@ -1022,11 +1047,13 @@ impl App {
                     self.live_filter_query = Some(query);
                     self.live_filter_error = None;
                     self.filtered_indices_cache = None;
+                    self.row_layout_cache = None;
                 }
                 Ok(_) => {
                     self.live_filter_query = None;
                     self.live_filter_error = None;
                     self.filtered_indices_cache = None;
+                    self.row_layout_cache = None;
                 }
                 Err(msg) => {
                     // Keep the previous live_filter_query so results stay filtered
@@ -1121,6 +1148,7 @@ impl App {
                     self.live_filter_query = None;
                     self.live_filter_error = None;
                     self.filtered_indices_cache = None;
+                    self.row_layout_cache = None;
                     if self.filter_history.last() != Some(&value) {
                         self.filter_history.push(value);
                         if self.filter_history.len() > 100 {
@@ -1134,6 +1162,7 @@ impl App {
                     self.live_filter_query = None;
                     self.live_filter_error = None;
                     self.filtered_indices_cache = None;
+                    self.row_layout_cache = None;
                 }
                 Err(msg) => {
                     self.filter_error = Some(msg.clone());
@@ -1170,6 +1199,7 @@ impl App {
         self.history_search_failed = false;
         self.history_search_start = None;
         self.filtered_indices_cache = None;
+        self.row_layout_cache = None;
     }
 
     fn handle_history_up(&mut self) {
@@ -1364,6 +1394,7 @@ impl App {
                 } else {
                     self.expanded.insert(self.selected);
                 }
+                self.row_layout_cache = None;
             }
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
                 self.pending_g = false;
@@ -1376,6 +1407,7 @@ impl App {
                         self.expanded.insert(idx);
                     }
                 }
+                self.row_layout_cache = None;
             }
             (KeyCode::Char('/'), _) => {
                 self.pending_g = false;
@@ -1389,6 +1421,7 @@ impl App {
                 self.pending_g = false;
                 self.filter_query = None;
                 self.filtered_indices_cache = None;
+                self.row_layout_cache = None;
             }
             (KeyCode::Char('y'), _) => {
                 self.pending_g = false;
@@ -1538,18 +1571,26 @@ impl App {
         // auto_scroll: follow the latest line
         self.update_auto_scroll(visible_height, content_width);
 
-        // Compute row layout and clamp scroll_offset
-        let row_layout = self.compute_row_layout(&filtered, content_width);
-        let total_rows = Self::total_row_count(&row_layout);
+        // Compute row layout (cached) and clamp scroll_offset
+        let (row_layout, prefix_sums) = self.cached_row_layout(content_width);
+        let row_layout = row_layout.to_vec();
+        let prefix_sums = prefix_sums.to_vec();
+        let total_rows = *prefix_sums.last().unwrap_or(&0);
         let max_offset = total_rows.saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_offset);
 
-        // Find the first entry that overlaps with the visible area
+        // Find the first entry that overlaps with the visible area using binary
+        // search on the prefix sums; this avoids an O(N) linear scan when the
+        // viewport is far from index 0 (e.g. auto-scrolled to the bottom).
+        let start_pos = match prefix_sums.binary_search(&self.scroll_offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
         let mut display_rows: Vec<Line<'static>> = Vec::new();
-        let mut accumulated_rows = 0usize;
+        let mut accumulated_rows = prefix_sums.get(start_pos).copied().unwrap_or(0);
         let mut rows_remaining = visible_height;
 
-        for (pos, &idx) in filtered.iter().enumerate() {
+        for (pos, &idx) in filtered.iter().enumerate().skip(start_pos) {
             if rows_remaining == 0 {
                 break;
             }
@@ -4122,7 +4163,7 @@ mod tests {
         let filtered = app.filtered_indices();
         let sel_pos = filtered.iter().position(|&i| i == app.selected).unwrap();
         let row_layout = app.compute_row_layout(&filtered, content_width);
-        let entry_first_row = App::entry_to_first_row(sel_pos, &row_layout);
+        let entry_first_row = row_layout.iter().take(sel_pos).sum::<usize>();
         let entry_height = row_layout[sel_pos];
 
         assert!(
@@ -4165,7 +4206,7 @@ mod tests {
         let filtered = app.filtered_indices();
         let sel_pos = filtered.iter().position(|&i| i == app.selected).unwrap();
         let row_layout = app.compute_row_layout(&filtered, content_width);
-        let entry_first_row = App::entry_to_first_row(sel_pos, &row_layout);
+        let entry_first_row = row_layout.iter().take(sel_pos).sum::<usize>();
         let entry_height = row_layout[sel_pos];
 
         assert!(
