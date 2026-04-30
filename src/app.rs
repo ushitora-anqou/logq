@@ -763,54 +763,49 @@ impl App {
         let filtered = self.filtered_indices();
         let max_idx = filtered.len().saturating_sub(1);
 
+        // Hoist: any keypress except a g-prefix continuation clears the pending state.
+        let prev_pending_g = self.pending_g;
+        self.pending_g = false;
+
         match (code, modifiers) {
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                 self.handle_ctrl_x();
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
-                self.pending_g = false;
                 self.move_selection(1, visible_height, content_width);
             }
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
-                self.pending_g = false;
                 self.move_selection(-1, visible_height, content_width);
             }
             (KeyCode::Char('G'), _) if !filtered.is_empty() => {
-                self.pending_g = false;
                 self.selected = filtered[max_idx];
                 self.auto_scroll = true;
                 self.ensure_selection_visible(visible_height, content_width);
             }
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 self.show_help = true;
             }
             (KeyCode::Char('g'), _) if !filtered.is_empty() => {
-                if self.pending_g {
+                if prev_pending_g {
                     self.selected = filtered[0];
                     self.auto_scroll = false;
                     self.scroll_offset = 0;
-                    self.pending_g = false;
                 } else {
                     self.pending_g = true;
                 }
             }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 let half = (visible_height / 2).max(1);
                 self.page_move(half as isize, visible_height, content_width, true);
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 let half = (visible_height / 2).max(1);
                 self.page_move(-(half as isize), visible_height, content_width, false);
             }
             (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 self.page_move(visible_height as isize, visible_height, content_width, true);
             }
             (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 self.page_move(
                     -(visible_height as isize),
                     visible_height,
@@ -819,15 +814,12 @@ impl App {
                 );
             }
             (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 self.move_selection(1, visible_height, content_width);
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 self.move_selection(-1, visible_height, content_width);
             }
             (KeyCode::Enter, _) if !filtered.is_empty() => {
-                self.pending_g = false;
                 if self.expanded.contains(&self.selected) {
                     self.expanded.remove(&self.selected);
                 } else {
@@ -836,7 +828,6 @@ impl App {
                 self.cache.row_layout = None;
             }
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
-                self.pending_g = false;
                 if self.expand_all {
                     self.expand_all = false;
                     self.expanded.clear();
@@ -849,7 +840,6 @@ impl App {
                 self.cache.row_layout = None;
             }
             (KeyCode::Char('/'), _) => {
-                self.pending_g = false;
                 self.filter_input = Some(tui_input::Input::default());
                 self.filter_history_index = None;
                 self.filter_draft = None;
@@ -857,17 +847,13 @@ impl App {
                 self.update_live_filter();
             }
             (KeyCode::Esc, _) => {
-                self.pending_g = false;
                 self.filter_query = None;
                 self.invalidate_caches();
             }
             (KeyCode::Char('y'), _) => {
-                self.pending_g = false;
                 let _ = self.yank_selected();
             }
-            _ => {
-                self.pending_g = false;
-            }
+            _ => {}
         }
     }
 
