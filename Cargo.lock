@@ -876,6 +876,8 @@ dependencies = [
  "sys-locale",
  "tokio",
  "tui-input",
+ "unicode-truncate",
+ "unicode-width",
 ]
 
 [[package]]

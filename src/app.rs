@@ -936,8 +936,8 @@ impl App {
                 } else {
                     t!("input.reverse_i_search").to_string()
                 };
-                let prefix_len = label.len() + 1; // +1 for the "'" suffix
-                (1 + prefix_len + pattern.len()) as u16
+                let prefix_len = display_width(&label) + 1; // +1 for the "'" suffix
+                (1 + prefix_len + display_width(pattern)) as u16
             } else {
                 let input = self.filter_input.as_ref().unwrap();
                 (1 + input.visual_cursor()) as u16
@@ -984,8 +984,8 @@ impl App {
 
         // Layout: "logq" on left, centered status, padding to fill width
         let left = "logq";
-        let left_len = left.len();
-        let center_len = center_text.len();
+        let left_len = display_width(left);
+        let center_len = display_width(&center_text);
 
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::styled(left.to_string(), reversed));
@@ -1007,7 +1007,7 @@ impl App {
         }
 
         // Ensure we fill the width exactly
-        let total_len: usize = spans.iter().map(|s| s.content.len()).sum();
+        let total_len: usize = spans.iter().map(|s| display_width(&s.content)).sum();
         if total_len < width {
             spans.push(Span::styled(
                 " ".repeat(width.saturating_sub(total_len)),
@@ -1228,7 +1228,7 @@ impl App {
             )]
         };
 
-        let left_len: usize = s.iter().map(|sp| sp.content.len()).sum();
+        let left_len: usize = s.iter().map(|sp| display_width(&sp.content)).sum();
         let padding = width.saturating_sub(left_len);
         if padding > 0 {
             s.push(Span::styled(" ".repeat(padding), bg));
@@ -1248,7 +1248,7 @@ impl App {
 
         if let Some(err) = error {
             let err_prefix = t!("status.error_prefix").to_string();
-            let full_len = err_prefix.len() + err.len() + 1; // +1 for leading space
+            let full_len = display_width(&err_prefix) + display_width(err) + 1; // +1 for leading space
             let spans = vec![
                 Span::styled(
                     format!("{}{}", err_prefix, err),
@@ -1282,7 +1282,7 @@ impl App {
         }
 
         let status_text = parts.join(" │ ");
-        let text_len = status_text.len() + 1;
+        let text_len = display_width(&status_text) + 1;
         let spans = vec![
             Span::styled(
                 format!(" {}", status_text),
@@ -1336,7 +1336,7 @@ impl App {
             };
             let padding = col_width
                 .saturating_sub(kw + 1)
-                .saturating_sub(desc_text.len());
+                .saturating_sub(display_width(&desc_text));
 
             // Key part: reverse video
             spans.push(Span::styled(
@@ -1360,7 +1360,7 @@ impl App {
         }
 
         // Ensure we fill the entire width
-        let total_len: usize = spans.iter().map(|s| s.content.len()).sum();
+        let total_len: usize = spans.iter().map(|s| display_width(&s.content)).sum();
         if total_len < width {
             spans.push(Span::raw(" ".repeat(width - total_len)));
         }
@@ -2011,7 +2011,19 @@ mod tests {
     #[test]
     fn test_truncate_str() {
         assert_eq!(truncate_str("hello", 10), "hello");
-        assert_eq!(truncate_str("hello world", 8), "hello wo…");
+        assert_eq!(truncate_str("hello world", 8), "hello w…");
+        // CJK characters: each is 2 columns wide
+        assert_eq!(truncate_str("あいうえお", 10), "あいうえお"); // 5 chars × 2 = 10 width, fits exactly
+        assert_eq!(truncate_str("あいうえお", 5), "あい…"); // 2 chars (4 width) + … (1 width) = 5
+        assert_eq!(truncate_str("hello世界", 9), "hello世界"); // 5 + 4 = 9 width, fits
+        assert_eq!(truncate_str("hello世界", 8), "hello世…"); // 5 + 2 + 1 = 8
+    }
+
+    #[test]
+    fn test_display_width() {
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width("あいう"), 6); // 3 CJK chars × 2 columns = 6
+        assert_eq!(display_width("hello世界"), 9); // 5 ASCII + 2 CJK × 2 = 9
     }
 
     #[test]

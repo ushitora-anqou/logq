@@ -45,3 +45,5 @@ serde_json = "1"
 sys-locale = "0.3"
 tokio = { version = "1", features = ["full"] }
 tui-input = "0.15"
+unicode-truncate = "2"
+unicode-width = "0.2"

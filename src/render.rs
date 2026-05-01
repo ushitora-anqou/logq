@@ -1,17 +1,22 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
+use unicode_truncate::UnicodeTruncateStr;
+use unicode_width::UnicodeWidthStr;
 
 use crate::highlight::{HighlightColors, find_string_end};
 
+/// Return the Unicode display width of a string.
+pub fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
 pub fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    let width = display_width(s);
+    if width <= max_len {
         s.to_string()
     } else {
-        let mut end = max_len;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}…", &s[..end])
+        let (truncated, _) = s.unicode_truncate(max_len - 1);
+        format!("{truncated}…")
     }
 }
 
@@ -61,18 +66,14 @@ pub fn wrap_line(line: &Line<'_>, width: usize) -> Vec<Vec<Span<'static>>> {
                 current_width = 0;
                 continue;
             }
-            let (chunk, chunk_width) = if remaining.chars().count() <= available {
-                let w = remaining.chars().count();
+            let (chunk, chunk_width) = if display_width(&remaining) <= available {
+                let w = display_width(&remaining);
                 let s = std::mem::take(&mut remaining);
                 (s, w)
             } else {
-                let mut end = available;
-                while end > 0 && !remaining.is_char_boundary(end) {
-                    end -= 1;
-                }
-                let w = remaining[..end].chars().count();
-                let s = remaining[..end].to_string();
-                remaining = remaining[end..].to_string();
+                let (truncated, w) = remaining.unicode_truncate(available);
+                let s = truncated.to_string();
+                remaining = remaining[truncated.len()..].to_string();
                 (s, w)
             };
             current.push(Span::styled(chunk, style));
