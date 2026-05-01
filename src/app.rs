@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -81,7 +81,7 @@ impl RenderCache {
 }
 
 pub struct App {
-    pub lines: Vec<LogEntry>,
+    pub lines: VecDeque<LogEntry>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
@@ -111,7 +111,7 @@ pub struct App {
 impl App {
     pub fn new(max_lines: usize) -> Self {
         Self {
-            lines: Vec::new(),
+            lines: VecDeque::new(),
             selected: 0,
             scroll_offset: 0,
             auto_scroll: true,
@@ -170,14 +170,20 @@ impl App {
         if source == LineSource::System && line.contains("process exited") {
             self.process_exited = true;
         }
+        let matches_filter = self.line_matches_filter(&line);
         let timestamp = Local::now().format("%H:%M:%S%.3f").to_string();
-        self.lines.push(LogEntry {
+        let new_idx = self.lines.len();
+        self.lines.push_back(LogEntry {
             text: line,
             timestamp,
             source,
         });
         if self.lines.len() > self.max_lines {
-            self.lines.remove(0);
+            self.lines.pop_front();
+            self.adjust_filtered_indices_on_remove();
+            if matches_filter && let Some(indices) = &mut self.cache.filtered_indices {
+                indices.push(self.lines.len() - 1);
+            }
             if self.selected > 0 {
                 self.selected -= 1;
             }
@@ -187,8 +193,12 @@ impl App {
                 .filter(|&&i| i > 0)
                 .map(|&i| i - 1)
                 .collect();
+        } else if let Some(indices) = &mut self.cache.filtered_indices
+            && matches_filter
+        {
+            indices.push(new_idx);
         }
-        self.invalidate_caches();
+        self.invalidate_row_layout();
         // auto_scroll: selected/scroll_offset are updated in update_auto_scroll()
     }
 
@@ -332,6 +342,24 @@ impl App {
         self.cache.invalidate();
     }
 
+    fn invalidate_row_layout(&mut self) {
+        self.cache.row_layout = None;
+    }
+
+    fn adjust_filtered_indices_on_remove(&mut self) {
+        if let Some(indices) = &mut self.cache.filtered_indices {
+            // The front entry was removed; its index was 0.
+            // Remove index 0 if present, then decrement all remaining indices.
+            let removed_zero = indices.first() == Some(&0);
+            if removed_zero {
+                indices.remove(0);
+            }
+            for idx in indices.iter_mut() {
+                *idx = idx.saturating_sub(1);
+            }
+        }
+    }
+
     fn is_expanded(&self, lines_idx: usize) -> bool {
         self.expand_all || self.expanded.contains(&lines_idx)
     }
@@ -450,27 +478,32 @@ impl App {
         }
     }
 
-    pub fn handle_event(&mut self, event: Event, area: Rect) {
-        if let Event::Key(key) = event {
-            if key.kind != KeyEventKind::Press {
-                return;
+    pub fn handle_event(&mut self, event: Event, area: Rect) -> bool {
+        match event {
+            Event::Resize(_, _) => true,
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    return false;
+                }
+
+                if self.show_help {
+                    self.handle_help_key(key);
+                    return true;
+                }
+
+                let visible_height = self.visible_height(&area);
+                let content_width = (area.width as usize).saturating_sub(TIMESTAMP_WIDTH);
+
+                // Handle filter input mode
+                if self.filter_input.is_some() {
+                    self.handle_filter_input(key);
+                    return true;
+                }
+
+                self.handle_list_key(key.code, key.modifiers, visible_height, content_width);
+                true
             }
-
-            if self.show_help {
-                self.handle_help_key(key);
-                return;
-            }
-
-            let visible_height = self.visible_height(&area);
-            let content_width = (area.width as usize).saturating_sub(TIMESTAMP_WIDTH);
-
-            // Handle filter input mode
-            if self.filter_input.is_some() {
-                self.handle_filter_input(key);
-                return;
-            }
-
-            self.handle_list_key(key.code, key.modifiers, visible_height, content_width);
+            _ => false,
         }
     }
 
@@ -3687,5 +3720,113 @@ mod tests {
     #[test]
     fn test_line_format_empty_key() {
         assert!(parse_line_format_template("{{ . }}").is_err());
+    }
+
+    #[test]
+    fn test_handle_event_key_returns_true() {
+        let mut app = App::new(100);
+        let area = Rect::new(0, 0, 80, 24);
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(app.handle_event(event, area));
+    }
+
+    #[test]
+    fn test_handle_event_mouse_returns_false() {
+        let mut app = App::new(100);
+        let area = Rect::new(0, 0, 80, 24);
+        let event = Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(!app.handle_event(event, area));
+    }
+
+    #[test]
+    fn test_handle_event_resize_returns_true() {
+        let mut app = App::new(100);
+        let area = Rect::new(0, 0, 80, 24);
+        let event = Event::Resize(120, 40);
+        assert!(app.handle_event(event, area));
+    }
+
+    #[test]
+    fn test_handle_event_key_release_returns_false() {
+        let mut app = App::new(100);
+        let area = Rect::new(0, 0, 80, 24);
+        let event = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert!(!app.handle_event(event, area));
+    }
+
+    #[test]
+    fn test_filtered_indices_no_recompute_on_second_call() {
+        let mut app = App::new(100);
+        app.add_line("a".to_string());
+        app.add_line("b".to_string());
+        // First call computes, second uses cache
+        let f1 = app.filtered_indices();
+        let f2 = app.filtered_indices();
+        assert_eq!(f1, f2);
+    }
+
+    #[test]
+    fn test_add_line_incremental_filtered_indices_no_filter() {
+        let mut app = App::new(100);
+        app.add_line("a".to_string());
+        // Populate the cache
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![0]);
+
+        // Add a line — should incrementally update, not invalidate
+        app.add_line("b".to_string());
+        // Cache should still be populated (not None)
+        assert!(app.cache.filtered_indices.is_some());
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_add_line_incremental_filtered_indices_with_filter() {
+        let mut app = App::new(100);
+        app.add_line(r#"{"level":"info","msg":"hello"}"#.to_string());
+        app.add_line(r#"{"level":"error","msg":"bad"}"#.to_string());
+        // Set a filter that matches "error"
+        app.filter_query = Some(parse_filter_query(r#"| level = "error""#).unwrap());
+        app.invalidate_caches();
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![1]);
+
+        // Add a matching line
+        app.add_line(r#"{"level":"error","msg":"worse"}"#.to_string());
+        assert!(app.cache.filtered_indices.is_some());
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![1, 2]);
+
+        // Add a non-matching line
+        app.add_line(r#"{"level":"info","msg":"ok"}"#.to_string());
+        assert!(app.cache.filtered_indices.is_some());
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_add_line_incremental_max_lines_trims_cache() {
+        let mut app = App::new(3);
+        app.add_line("a".to_string());
+        app.add_line("b".to_string());
+        app.add_line("c".to_string());
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![0, 1, 2]);
+
+        // Exceed max_lines — should trim from front
+        app.add_line("d".to_string());
+        assert!(app.cache.filtered_indices.is_some());
+        let f = app.filtered_indices();
+        assert_eq!(f, vec![0, 1, 2]); // indices shifted: [b, c, d] → [0, 1, 2]
     }
 }

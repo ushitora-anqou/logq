@@ -202,8 +202,9 @@ fn run_app(
         if app.poll_events()? {
             let event = app.next_event()?;
             let area = terminal.get_frame().area();
-            app.handle_event(event, area);
-            needs_render = true;
+            if app.handle_event(event, area) {
+                needs_render = true;
+            }
         }
 
         if needs_render {
