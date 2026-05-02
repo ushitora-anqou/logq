@@ -1700,31 +1700,13 @@ impl App {
                         desc: t!("help.key.move_up").to_string(),
                     },
                     ShortcutItem {
-                        key: "Enter",
-                        desc: t!("help.key.toggle_expand").to_string(),
+                        key: "^E",
+                        desc: t!("shortcut.one_line_down").to_string(),
                     },
                     ShortcutItem {
-                        key: "/",
-                        desc: t!("shortcut.filter_lines").to_string(),
+                        key: "^Y",
+                        desc: t!("shortcut.one_line_up").to_string(),
                     },
-                    ShortcutItem {
-                        key: "G",
-                        desc: t!("help.key.jump_to_end").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "Esc",
-                        desc: t!("help.key.clear_filter").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "^X",
-                        desc: t!("help.key.exit_logq").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "gg",
-                        desc: t!("help.key.jump_to_top").to_string(),
-                    },
-                ],
-                [
                     ShortcutItem {
                         key: "^D",
                         desc: t!("shortcut.half_pg_down").to_string(),
@@ -1734,24 +1716,42 @@ impl App {
                         desc: t!("shortcut.half_pg_up").to_string(),
                     },
                     ShortcutItem {
-                        key: "^O",
-                        desc: t!("shortcut.expand_all").to_string(),
-                    },
-                    ShortcutItem {
                         key: "^B",
                         desc: t!("shortcut.full_pg_up").to_string(),
                     },
                     ShortcutItem {
-                        key: "^E",
-                        desc: t!("shortcut.one_line_down").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "^Y",
-                        desc: t!("shortcut.one_line_up").to_string(),
-                    },
-                    ShortcutItem {
                         key: "^F",
                         desc: t!("shortcut.full_pg_down").to_string(),
+                    },
+                ],
+                [
+                    ShortcutItem {
+                        key: "gg",
+                        desc: t!("help.key.jump_to_top").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "G",
+                        desc: t!("help.key.jump_to_end").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "Enter",
+                        desc: t!("help.key.toggle_expand").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^O",
+                        desc: t!("shortcut.expand_all").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "/",
+                        desc: t!("shortcut.filter_lines").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "Esc",
+                        desc: t!("help.key.clear_filter").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^X",
+                        desc: t!("help.key.exit_logq").to_string(),
                     },
                     ShortcutItem {
                         key: "^G",
