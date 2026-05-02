@@ -31,6 +31,12 @@ impl TestApp {
         self.app.add_line(line.to_string());
     }
 
+    fn clear_filter_input(&mut self) {
+        if let Some(input) = &mut self.app.filter_input {
+            *input = tui_input::Input::new(String::new());
+        }
+    }
+
     fn press(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         let event = Event::Key(KeyEvent::new(code, modifiers));
         let area = ratatui::layout::Rect::new(0, 0, WIDTH, HEIGHT);
@@ -608,7 +614,7 @@ fn test_filter_history_no_duplicate() {
 }
 
 #[test]
-fn test_slash_starts_empty() {
+fn test_slash_prepopulates_current_filter() {
     let mut t = TestApp::new(10000);
     t.add_line("hello world");
     t.render();
@@ -620,9 +626,12 @@ fn test_slash_starts_empty() {
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Press / again — should start with empty input
+    // Press / again — should pre-populate with current filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
+    assert_eq!(
+        t.app.filter_input.as_ref().map(|i| i.value()),
+        Some(r#"|= "hello""#)
+    );
 
     // Up arrow should load the previous query from history
     t.press(KeyCode::Up, KeyModifiers::NONE);
@@ -645,15 +654,17 @@ fn test_filter_history_up_down() {
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Apply second filter (type full query from scratch)
+    // Apply second filter (clear pre-populated input, type full query)
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in r#"|= "first" |= "second""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Enter filter mode — starts with empty input
+    // Enter filter mode — starts with pre-populated current filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
 
     // Up should show the last (combined) query
@@ -698,8 +709,9 @@ fn test_empty_enter_clears_filter_then_slash_starts_empty() {
     t.render();
     assert!(t.screen_contains("[filter:"));
 
-    // Open filter, press Enter with empty input — should clear filter
+    // Open filter, clear pre-populated input, press Enter with empty input — should clear filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
     t.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(t.app.filter_input.is_none());
@@ -711,7 +723,7 @@ fn test_empty_enter_clears_filter_then_slash_starts_empty() {
     assert!(t.screen_contains("hello world"));
     assert!(t.screen_contains("foo bar"));
 
-    // Press / again — should start with empty input
+    // Press / again — no active filter, so starts empty
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
 }
@@ -794,13 +806,15 @@ fn test_ctrl_r_preserves_search_pattern() {
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in r#"|= "alpha beta""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Enter filter mode, type "alpha" as search pattern, then Ctrl+R
+    // Enter filter mode, clear pre-populated input, type "alpha" as search pattern, then Ctrl+R
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in "alpha".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
@@ -843,13 +857,15 @@ fn test_ctrl_r_type_adds_to_pattern() {
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in r#"|= "beta""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Enter filter mode, Ctrl+R to start search, then type "alpha"
+    // Enter filter mode, clear pre-populated input, Ctrl+R to start search, then type "alpha"
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
     for c in "alpha".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
@@ -953,8 +969,9 @@ fn test_ctrl_g_cancels_search_restores_input() {
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Enter filter mode with some text
+    // Enter filter mode, clear pre-populated input, type some text
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in r#"|= "beta""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
@@ -1050,19 +1067,22 @@ fn test_ctrl_r_uses_typed_text_as_initial_pattern() {
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in r#"|= "alpha beta""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in r#"|= "beta""#.chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
 
-    // Type "alpha" then press Ctrl+R — should use "alpha" as initial search pattern
+    // Clear pre-populated input, type "alpha" then press Ctrl+R
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
+    t.clear_filter_input();
     for c in "alpha".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
