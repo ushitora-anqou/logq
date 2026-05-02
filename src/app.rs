@@ -106,6 +106,7 @@ pub struct App {
     pub expand_all: bool,
     pub process_exited: bool,
     pub show_help: bool,
+    help_scroll: u16,
 }
 
 impl App {
@@ -138,6 +139,7 @@ impl App {
             expand_all: false,
             process_exited: false,
             show_help: false,
+            help_scroll: 0,
         }
     }
 
@@ -513,6 +515,12 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.show_help = false
             }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.help_scroll = self.help_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
             _ => {}
         }
     }
@@ -598,6 +606,7 @@ impl App {
                 self.handle_history_down();
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_scroll = 0;
                 self.show_help = true;
             }
             _ => {
@@ -816,6 +825,7 @@ impl App {
                 self.ensure_selection_visible(visible_height, content_width);
             }
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
+                self.help_scroll = 0;
                 self.show_help = true;
             }
             (KeyCode::Char('g'), _) if !filtered.is_empty() => {
@@ -1374,7 +1384,7 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn render_help(&self, frame: &mut Frame, area: Rect) {
+    fn render_help(&mut self, frame: &mut Frame, area: Rect) {
         let key_style = Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
@@ -1447,13 +1457,22 @@ impl App {
         )]));
 
         let content_height = lines.len() as u16;
-        let content_width = 40u16;
+        let content_width = lines
+            .iter()
+            .map(|line| line.width() as u16)
+            .max()
+            .unwrap_or(40)
+            .max(40)
+            .min(area.width.saturating_sub(4));
+
+        let popup_width = (content_width + 4).min(area.width);
+        let popup_height = (content_height + 2).min(area.height);
 
         let help_area = Rect {
-            x: area.width.saturating_sub(content_width + 4) / 2,
-            y: area.height.saturating_sub(content_height + 2) / 2,
-            width: (content_width + 4).min(area.width),
-            height: (content_height + 2).min(area.height),
+            x: area.width.saturating_sub(popup_width) / 2,
+            y: area.height.saturating_sub(popup_height) / 2,
+            width: popup_width,
+            height: popup_height,
         };
 
         frame.render_widget(Clear, help_area);
@@ -1463,7 +1482,15 @@ impl App {
             .title(Span::styled(t!("help.title").to_string(), key_style));
         let inner = block.inner(help_area);
         frame.render_widget(block, help_area);
-        frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+
+        let visible_height = inner.height;
+        let max_scroll = content_height.saturating_sub(visible_height);
+        self.help_scroll = self.help_scroll.min(max_scroll);
+
+        frame.render_widget(
+            Paragraph::new(Text::from(lines)).scroll((self.help_scroll, 0)),
+            inner,
+        );
     }
 
     fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
@@ -2875,19 +2902,12 @@ mod tests {
         app.add_line("bar line".to_string());
 
         // Set a filter query directly (simulates an already-applied filter)
-        app.filter_query = Some(
-            parse_filter_query(r#"|= "foo""#).unwrap(),
-        );
+        app.filter_query = Some(parse_filter_query(r#"|= "foo""#).unwrap());
         assert!(app.filter_query.is_some());
         assert!(app.filter_input.is_none());
 
         // Press / — should pre-populate with current filter
-        app.handle_list_key(
-            KeyCode::Char('/'),
-            KeyModifiers::NONE,
-            10,
-            80,
-        );
+        app.handle_list_key(KeyCode::Char('/'), KeyModifiers::NONE, 10, 80);
         assert!(
             app.filter_input.is_some(),
             "filter_input should be set after pressing /"
@@ -2907,12 +2927,7 @@ mod tests {
         assert!(app.filter_query.is_none());
 
         // Press / — should start with empty input
-        app.handle_list_key(
-            KeyCode::Char('/'),
-            KeyModifiers::NONE,
-            10,
-            80,
-        );
+        app.handle_list_key(KeyCode::Char('/'), KeyModifiers::NONE, 10, 80);
         assert!(app.filter_input.is_some());
         assert_eq!(
             app.filter_input.as_ref().unwrap().value(),
