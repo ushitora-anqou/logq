@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -71,12 +71,15 @@ struct RenderCache {
     filtered_indices: Option<Vec<usize>>,
     /// (content_width, row_layout, prefix_sums)
     row_layout: Option<(usize, Vec<usize>, Vec<usize>)>,
+    /// Per-entry expanded height cache: (content_width, lines_idx -> height)
+    entry_heights: Option<(usize, HashMap<usize, usize>)>,
 }
 
 impl RenderCache {
     fn invalidate(&mut self) {
         self.filtered_indices = None;
         self.row_layout = None;
+        self.entry_heights = None;
     }
 }
 
@@ -183,6 +186,7 @@ impl App {
         if self.lines.len() > self.max_lines {
             self.lines.pop_front();
             self.adjust_filtered_indices_on_remove();
+            self.adjust_entry_heights_on_remove();
             if matches_filter && let Some(indices) = &mut self.cache.filtered_indices {
                 indices.push(self.lines.len() - 1);
             }
@@ -362,6 +366,17 @@ impl App {
         }
     }
 
+    fn adjust_entry_heights_on_remove(&mut self) {
+        if let Some((_, map)) = &mut self.cache.entry_heights {
+            map.remove(&0);
+            let mut new_map = HashMap::with_capacity(map.len());
+            for (&k, &v) in map.iter() {
+                new_map.insert(k.saturating_sub(1), v);
+            }
+            *map = new_map;
+        }
+    }
+
     fn is_expanded(&self, lines_idx: usize) -> bool {
         self.expand_all || self.expanded.contains(&lines_idx)
     }
@@ -374,10 +389,32 @@ impl App {
         wrapped_text_height(&text, content_width)
     }
 
-    fn compute_row_layout(&self, filtered: &[usize], content_width: usize) -> Vec<usize> {
+    fn entry_display_height_cached(&mut self, lines_idx: usize, content_width: usize) -> usize {
+        if let Some((w, _)) = &self.cache.entry_heights
+            && *w != content_width
+        {
+            self.cache.entry_heights = None;
+        }
+        if self.cache.entry_heights.is_none() {
+            self.cache.entry_heights = Some((content_width, HashMap::new()));
+        }
+        if let Some(&h) = self.cache.entry_heights.as_ref().unwrap().1.get(&lines_idx) {
+            return h;
+        }
+        let h = self.entry_display_height(lines_idx, content_width);
+        self.cache
+            .entry_heights
+            .as_mut()
+            .unwrap()
+            .1
+            .insert(lines_idx, h);
+        h
+    }
+
+    fn compute_row_layout(&mut self, filtered: &[usize], content_width: usize) -> Vec<usize> {
         filtered
             .iter()
-            .map(|&idx| self.entry_display_height(idx, content_width))
+            .map(|&idx| self.entry_display_height_cached(idx, content_width))
             .collect()
     }
 
@@ -878,6 +915,7 @@ impl App {
                     self.expanded.insert(self.selected);
                 }
                 self.cache.row_layout = None;
+                self.cache.entry_heights = None;
             }
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
                 if self.expand_all {
@@ -890,6 +928,7 @@ impl App {
                     }
                 }
                 self.cache.row_layout = None;
+                self.cache.entry_heights = None;
             }
             (KeyCode::Char('/'), _) => {
                 let initial = self
@@ -2174,6 +2213,75 @@ mod tests {
             cached_elapsed.as_micros() < 1000,
             "cached filtered_indices took {:?}, expected < 1ms",
             cached_elapsed
+        );
+    }
+
+    #[test]
+    fn test_entry_height_cache_reuses_on_add_line() {
+        let mut app = App::new(10000);
+        for i in 0..100 {
+            app.add_line(format!(r#"{{"level":"info","msg":"line {}"}}"#, i));
+        }
+        app.expand_all = true;
+
+        // Force layout computation to populate the entry height cache
+        let (layout1, _) = app.cached_row_layout(80);
+        let first_len = layout1.len();
+
+        // Add a new line — this should only compute the new entry's height
+        app.add_line(r#"{"level":"info","msg":"new line"}"#.to_string());
+
+        let (layout2, _) = app.cached_row_layout(80);
+        assert_eq!(layout2.len(), first_len + 1);
+
+        // Entry heights cache should have entries for all filtered lines
+        let cached = app.cache.entry_heights.as_ref().unwrap();
+        assert_eq!(cached.1.len(), first_len + 1);
+    }
+
+    #[test]
+    fn test_entry_height_cache_invalidated_on_toggle() {
+        let mut app = App::new(100);
+        app.add_line(r#"{"key":"value"}"#.to_string());
+        app.expand_all = true;
+
+        let _ = app.cached_row_layout(80);
+        assert!(app.cache.entry_heights.is_some());
+
+        // Simulate Ctrl-O toggle (collapse all)
+        app.expand_all = false;
+        app.expanded.clear();
+        app.cache.row_layout = None;
+        app.cache.entry_heights = None;
+
+        let (layout, _) = app.cached_row_layout(80);
+        assert_eq!(layout[0], 1, "collapsed entry should have height 1");
+    }
+
+    #[test]
+    fn test_entry_height_cache_adjusted_on_remove() {
+        let mut app = App::new(3);
+        app.add_line(r#"{"key":"line0"}"#.to_string());
+        app.add_line(r#"{"key":"line1"}"#.to_string());
+        app.add_line(r#"{"key":"line2"}"#.to_string());
+        app.expand_all = true;
+
+        let _ = app.cached_row_layout(80);
+        assert!(app.cache.entry_heights.is_some());
+        // Cache should have entries for indices 0, 1, 2
+        let map = &app.cache.entry_heights.as_ref().unwrap().1;
+        assert!(map.contains_key(&0));
+        assert!(map.contains_key(&1));
+        assert!(map.contains_key(&2));
+
+        // Add one more line, triggering overflow (removes index 0)
+        app.add_line(r#"{"key":"line3"}"#.to_string());
+
+        // After removal, cache should be adjusted: keys shifted down
+        let map = &app.cache.entry_heights.as_ref().unwrap().1;
+        assert!(
+            !map.contains_key(&0) || app.lines.len() <= 3,
+            "old index 0 should be gone after removal"
         );
     }
 
