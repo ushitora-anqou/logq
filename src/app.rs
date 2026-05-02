@@ -873,7 +873,12 @@ impl App {
                 self.cache.row_layout = None;
             }
             (KeyCode::Char('/'), _) => {
-                self.filter_input = Some(tui_input::Input::default());
+                let initial = self
+                    .filter_query
+                    .as_ref()
+                    .map(|q| q.display_string())
+                    .unwrap_or_default();
+                self.filter_input = Some(tui_input::Input::new(initial));
                 self.filter_history_index = None;
                 self.filter_draft = None;
                 self.clear_history_search();
@@ -2861,6 +2866,59 @@ mod tests {
         app.update_live_filter();
         assert!(app.live_filter_query.is_none());
         assert!(app.live_filter_error.is_some());
+    }
+
+    #[test]
+    fn test_slash_prepopulates_current_filter() {
+        let mut app = App::new(100);
+        app.add_line("foo line".to_string());
+        app.add_line("bar line".to_string());
+
+        // Set a filter query directly (simulates an already-applied filter)
+        app.filter_query = Some(
+            parse_filter_query(r#"|= "foo""#).unwrap(),
+        );
+        assert!(app.filter_query.is_some());
+        assert!(app.filter_input.is_none());
+
+        // Press / — should pre-populate with current filter
+        app.handle_list_key(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            10,
+            80,
+        );
+        assert!(
+            app.filter_input.is_some(),
+            "filter_input should be set after pressing /"
+        );
+        let input_value = app.filter_input.as_ref().unwrap().value().to_string();
+        assert_eq!(
+            input_value, r#"|= "foo""#,
+            "filter input should be pre-populated with current filter query"
+        );
+    }
+
+    #[test]
+    fn test_slash_starts_empty_when_no_filter() {
+        let mut app = App::new(100);
+        app.add_line("foo line".to_string());
+
+        assert!(app.filter_query.is_none());
+
+        // Press / — should start with empty input
+        app.handle_list_key(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            10,
+            80,
+        );
+        assert!(app.filter_input.is_some());
+        assert_eq!(
+            app.filter_input.as_ref().unwrap().value(),
+            "",
+            "filter input should be empty when no filter is active"
+        );
     }
 
     // and/or/parens parser tests
