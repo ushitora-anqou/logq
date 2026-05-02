@@ -332,6 +332,45 @@ impl App {
         self.ensure_selection_visible(visible_height, content_width);
     }
 
+    /// Try to scroll within an expanded entry. Returns true if scrolled (viewport
+    /// moved one row within the entry), false if at the entry boundary (caller
+    /// should fall through to move_selection).
+    fn try_scroll_expanded(
+        &mut self,
+        forward: bool,
+        visible_height: usize,
+        content_width: usize,
+    ) -> bool {
+        if !self.is_expanded(self.selected) {
+            return false;
+        }
+        let selected_pos = {
+            let filtered = self.filtered_indices();
+            match filtered.iter().position(|&i| i == self.selected) {
+                Some(p) => p,
+                None => return false,
+            }
+        };
+        let (row_layout, prefix_sums) = self.cached_row_layout(content_width);
+        let entry_first_row = prefix_sums[selected_pos];
+        let entry_height = row_layout[selected_pos];
+        if entry_height <= visible_height {
+            return false;
+        }
+        if forward {
+            if self.scroll_offset + visible_height < entry_first_row + entry_height {
+                self.scroll_offset += 1;
+                self.auto_scroll = false;
+                return true;
+            }
+        } else if self.scroll_offset > entry_first_row {
+            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+            self.auto_scroll = false;
+            return true;
+        }
+        false
+    }
+
     fn page_move(
         &mut self,
         delta_rows: isize,
@@ -464,10 +503,14 @@ impl App {
                 self.handle_ctrl_x();
             }
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
-                self.move_selection(1, visible_height, content_width);
+                if !self.try_scroll_expanded(true, visible_height, content_width) {
+                    self.move_selection(1, visible_height, content_width);
+                }
             }
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
-                self.move_selection(-1, visible_height, content_width);
+                if !self.try_scroll_expanded(false, visible_height, content_width) {
+                    self.move_selection(-1, visible_height, content_width);
+                }
             }
             (KeyCode::Char('G'), _) if !filtered.is_empty() => {
                 self.selected = filtered[max_idx];
@@ -507,10 +550,15 @@ impl App {
                 );
             }
             (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                self.move_selection(1, visible_height, content_width);
+                let (_, prefix_sums) = self.cached_row_layout(content_width);
+                let total_rows = *prefix_sums.last().unwrap_or(&0);
+                let max_offset = total_rows.saturating_sub(visible_height);
+                self.scroll_offset = (self.scroll_offset + 1).min(max_offset);
+                self.auto_scroll = false;
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                self.move_selection(-1, visible_height, content_width);
+                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                self.auto_scroll = false;
             }
             (KeyCode::Enter, _) if !filtered.is_empty() => {
                 if self.expanded.contains(&self.selected) {
@@ -3689,5 +3737,250 @@ mod tests {
         assert!(app.cache.filtered_indices.is_some());
         let f = app.filtered_indices();
         assert_eq!(f, vec![0, 1, 2]); // indices shifted: [b, c, d] → [0, 1, 2]
+    }
+
+    #[test]
+    fn test_j_scrolls_within_expanded_entry() {
+        // Create a long JSON object that wraps to many lines in a narrow viewport
+        let mut app = App::new(100);
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""key{i}": "value{i}""#))
+            .collect();
+        let long_json = format!("{{{}}}", fields.join(", "));
+        app.add_line(long_json.clone());
+        app.add_line("short".to_string());
+
+        let visible_height = 5usize;
+        let content_width = 20usize;
+
+        // Expand first entry
+        app.selected = 0;
+        app.expanded.insert(0);
+        app.cache.row_layout = None;
+        app.cache.entry_heights = None;
+
+        // Compute layout to determine entry height
+        let (_, prefix_sums) = app.cached_row_layout(content_width);
+        let entry_height = prefix_sums[1] - prefix_sums[0];
+        assert!(
+            entry_height > visible_height,
+            "entry must be taller than viewport"
+        );
+
+        // Initial state: scroll_offset at 0, viewport shows first rows
+        app.scroll_offset = 0;
+        app.auto_scroll = false;
+
+        // Press j — should scroll within entry, NOT move to next entry
+        app.handle_list_key(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 0, "selected should stay on expanded entry");
+        assert_eq!(app.scroll_offset, 1, "scroll_offset should increase by 1");
+
+        // Press j again — still scrolling within
+        app.handle_list_key(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(
+            app.selected, 0,
+            "selected should still stay on expanded entry"
+        );
+        assert_eq!(
+            app.scroll_offset, 2,
+            "scroll_offset should increase by 1 again"
+        );
+    }
+
+    #[test]
+    fn test_j_moves_to_next_entry_at_bottom_boundary() {
+        let mut app = App::new(100);
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""key{i}": "value{i}""#))
+            .collect();
+        let long_json = format!("{{{}}}", fields.join(", "));
+        app.add_line(long_json.clone());
+        app.add_line("short".to_string());
+
+        let visible_height = 5usize;
+        let content_width = 20usize;
+
+        app.selected = 0;
+        app.expanded.insert(0);
+        app.cache.row_layout = None;
+        app.cache.entry_heights = None;
+
+        let (_, prefix_sums) = app.cached_row_layout(content_width);
+        let entry_height = prefix_sums[1] - prefix_sums[0];
+
+        // Set scroll_offset to the bottom of the entry
+        app.scroll_offset = entry_height.saturating_sub(visible_height);
+        app.auto_scroll = false;
+
+        // Press j — should move to next entry
+        app.handle_list_key(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 1, "selected should move to next entry");
+    }
+
+    #[test]
+    fn test_k_scrolls_up_within_expanded_entry() {
+        let mut app = App::new(100);
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""key{i}": "value{i}""#))
+            .collect();
+        let long_json = format!("{{{}}}", fields.join(", "));
+        app.add_line(long_json.clone());
+        app.add_line("short".to_string());
+
+        let visible_height = 5usize;
+        let content_width = 20usize;
+
+        app.selected = 0;
+        app.expanded.insert(0);
+        app.cache.row_layout = None;
+        app.cache.entry_heights = None;
+
+        // Set scroll_offset past the start of the entry
+        app.scroll_offset = 3;
+        app.auto_scroll = false;
+
+        // Press k — should scroll up within entry
+        app.handle_list_key(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 0, "selected should stay on expanded entry");
+        assert_eq!(app.scroll_offset, 2, "scroll_offset should decrease by 1");
+    }
+
+    #[test]
+    fn test_k_moves_to_prev_entry_at_top_boundary() {
+        let mut app = App::new(100);
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""key{i}": "value{i}""#))
+            .collect();
+        let long_json = format!("{{{}}}", fields.join(", "));
+        app.add_line("first".to_string());
+        app.add_line(long_json.clone());
+
+        let visible_height = 5usize;
+        let content_width = 20usize;
+
+        app.selected = 1;
+        app.expanded.insert(1);
+        app.cache.row_layout = None;
+        app.cache.entry_heights = None;
+
+        let (_, prefix_sums) = app.cached_row_layout(content_width);
+        let entry_first_row = prefix_sums[1];
+
+        // scroll_offset at the start of the entry
+        app.scroll_offset = entry_first_row;
+        app.auto_scroll = false;
+
+        // Press k — should move to previous entry
+        app.handle_list_key(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 0, "selected should move to previous entry");
+    }
+
+    #[test]
+    fn test_ctrl_e_y_viewport_scroll_without_selection_change() {
+        let mut app = App::new(100);
+        let fields: Vec<String> = (0..30)
+            .map(|i| format!(r#""key{i}": "value{i}""#))
+            .collect();
+        let long_json = format!("{{{}}}", fields.join(", "));
+        app.add_line(long_json.clone());
+        app.add_line("short".to_string());
+
+        let visible_height = 5usize;
+        let content_width = 20usize;
+
+        app.selected = 0;
+        app.expanded.insert(0);
+        app.cache.row_layout = None;
+        app.cache.entry_heights = None;
+        app.scroll_offset = 0;
+        app.auto_scroll = false;
+
+        // Ctrl-e: scroll viewport down
+        app.handle_list_key(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 0, "Ctrl-e should not change selection");
+        assert_eq!(app.scroll_offset, 1, "Ctrl-e should scroll down by 1");
+
+        // Ctrl-e again
+        app.handle_list_key(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 0, "Ctrl-e should not change selection");
+        assert_eq!(app.scroll_offset, 2, "Ctrl-e should scroll down by 1 again");
+
+        // Ctrl-y: scroll viewport up
+        app.handle_list_key(
+            KeyCode::Char('y'),
+            KeyModifiers::CONTROL,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 0, "Ctrl-y should not change selection");
+        assert_eq!(app.scroll_offset, 1, "Ctrl-y should scroll up by 1");
+    }
+
+    #[test]
+    fn test_j_k_collapsed_entry_moves_normally() {
+        let mut app = App::new(100);
+        app.add_line("line 0".to_string());
+        app.add_line("line 1".to_string());
+        app.add_line("line 2".to_string());
+
+        let visible_height = 10usize;
+        let content_width = 40usize;
+
+        app.selected = 1;
+        app.auto_scroll = false;
+
+        // j on collapsed entry should move to next entry
+        app.handle_list_key(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 2);
+
+        // k on collapsed entry should move to prev entry
+        app.handle_list_key(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+            visible_height,
+            content_width,
+        );
+        assert_eq!(app.selected, 1);
     }
 }
