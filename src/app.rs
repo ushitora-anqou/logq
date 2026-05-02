@@ -515,6 +515,9 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.show_help = false
             }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.handle_ctrl_x();
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.help_scroll = self.help_scroll.saturating_add(1);
             }
@@ -570,6 +573,9 @@ impl App {
                     self.history_search_failed = false;
                     self.update_live_filter();
                 }
+                KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.handle_ctrl_x();
+                }
                 KeyCode::Backspace => {
                     pattern.pop();
                     self.history_search_update();
@@ -608,6 +614,9 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.help_scroll = 0;
                 self.show_help = true;
+            }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.handle_ctrl_x();
             }
             _ => {
                 // Delegate all other editing to tui-input
@@ -1959,6 +1968,22 @@ mod tests {
     fn test_ctrl_x_quit() {
         let mut app = App::new(100);
         app.handle_ctrl_x();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_ctrl_x_quit_from_help() {
+        let mut app = App::new(100);
+        app.show_help = true;
+        app.handle_help_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_ctrl_x_quit_from_filter_input() {
+        let mut app = App::new(100);
+        app.filter_input = Some(tui_input::Input::new("test".to_string()));
+        app.handle_filter_input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
