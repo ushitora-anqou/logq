@@ -435,6 +435,77 @@ fn parse_json_or_expr(chars: &[char], pos: &mut usize, len: usize) -> Result<Jso
     Ok(left)
 }
 
+impl FilterQuery {
+    pub fn matches(&self, text: &str) -> bool {
+        self.segments.iter().all(|seg| seg.matches(text))
+    }
+}
+
+impl FilterSegment {
+    fn matches(&self, text: &str) -> bool {
+        match self {
+            FilterSegment::Plain(c) => c.plain_matches(text),
+            FilterSegment::Json(expr) => expr.matches(text),
+            FilterSegment::LineFormat(_) => true,
+        }
+    }
+}
+
+impl JsonExpr {
+    fn matches(&self, text: &str) -> bool {
+        match self {
+            JsonExpr::Condition(c) => c.json_matches(text),
+            JsonExpr::And(l, r) => l.matches(text) && r.matches(text),
+            JsonExpr::Or(l, r) => l.matches(text) || r.matches(text),
+        }
+    }
+}
+
+impl FilterCondition {
+    fn plain_matches(&self, text: &str) -> bool {
+        match self.operator {
+            FilterOp::Contains => match &self.value {
+                FilterValue::String(s) => text.contains(s.as_str()),
+                _ => false,
+            },
+            FilterOp::NotContains => match &self.value {
+                FilterValue::String(s) => !text.contains(s.as_str()),
+                _ => false,
+            },
+            FilterOp::RegexMatch => self.regex.as_ref().unwrap().is_match(text),
+            FilterOp::NotRegexMatch => !self.regex.as_ref().unwrap().is_match(text),
+            _ => false,
+        }
+    }
+
+    fn json_matches(&self, text: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return false;
+        };
+        let key = self.json_key.as_deref().unwrap();
+        let target = lookup_json_key(&value, key);
+        let Some(target) = target else {
+            return matches!(
+                self.operator,
+                FilterOp::JsonNotEquals | FilterOp::JsonNotRegexMatch
+            );
+        };
+        match self.operator {
+            FilterOp::JsonEquals => compare_json_value(target, &self.value),
+            FilterOp::JsonNotEquals => !compare_json_value(target, &self.value),
+            FilterOp::JsonRegexMatch => {
+                let s = json_value_to_string(target);
+                self.regex.as_ref().unwrap().is_match(&s)
+            }
+            FilterOp::JsonNotRegexMatch => {
+                let s = json_value_to_string(target);
+                !self.regex.as_ref().unwrap().is_match(&s)
+            }
+            _ => false,
+        }
+    }
+}
+
 pub fn parse_filter_query(input: &str) -> Result<FilterQuery, String> {
     let s = input.trim();
     if s.is_empty() {

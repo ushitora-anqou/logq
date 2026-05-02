@@ -48,74 +48,36 @@ fn highlight_json_line(line: &str, colors: &HighlightColors) -> Line<'static> {
     let indent = Span::raw(line[..indent_len].to_string());
 
     let mut spans: Vec<Span<'static>> = vec![indent];
-    let mut rest = trimmed;
-    let mut in_key = true; // Before ':' we're in key, after ':' we're in value
+    let mut in_key = true;
+    let mut iter = iter_json_tokens(trimmed);
 
-    while !rest.is_empty() {
-        if rest.starts_with(':') {
-            spans.push(Span::styled(
-                ":".to_string(),
-                Style::default().fg(colors.punctuation),
-            ));
-            rest = rest[1..].trim_start();
-            in_key = false;
-            continue;
-        }
-        if rest.starts_with(',') {
-            spans.push(Span::styled(
-                ",".to_string(),
-                Style::default().fg(colors.punctuation),
-            ));
-            rest = rest[1..].trim_start();
-            // After comma in an object, next token is a key
-            // After comma in an array, next token is a value
-            // Heuristic: if next non-whitespace is a quote, it's a key
-            in_key = rest.starts_with('"');
-            continue;
-        }
-        if rest.starts_with('{')
-            || rest.starts_with('}')
-            || rest.starts_with('[')
-            || rest.starts_with(']')
-        {
-            spans.push(Span::styled(
-                rest[..1].to_string(),
-                Style::default().fg(colors.punctuation),
-            ));
-            rest = rest[1..].trim_start();
-            in_key = rest.starts_with('"');
-            continue;
-        }
-
-        if rest.starts_with('"') {
-            let end = find_string_end(rest);
-            let s = &rest[..end];
-            if in_key {
-                spans.push(Span::styled(s.to_string(), Style::default().fg(colors.key)));
-            } else {
+    while let Some((kind, token)) = iter.next() {
+        match kind {
+            JsonTokenKind::Punctuation => {
                 spans.push(Span::styled(
-                    s.to_string(),
-                    Style::default().fg(colors.string),
+                    token.to_string(),
+                    Style::default().fg(colors.punctuation),
                 ));
+                match token {
+                    ":" => in_key = false,
+                    _ => in_key = iter.rest.trim_start().starts_with('"'),
+                }
             }
-            rest = rest[end..].trim_start();
-            continue;
+            JsonTokenKind::String => {
+                let color = if in_key { colors.key } else { colors.string };
+                spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
+            }
+            JsonTokenKind::Literal => {
+                if token.trim().is_empty() {
+                    spans.push(Span::raw(token.to_string()));
+                } else {
+                    spans.push(Span::styled(
+                        token.to_string(),
+                        Style::default().fg(json_literal_color(token, colors)),
+                    ));
+                }
+            }
         }
-
-        // Number, boolean, or null
-        let end = rest
-            .find(|c: char| c == ',' || c == '}' || c == ']' || c == ':' || c.is_whitespace())
-            .unwrap_or(rest.len());
-        let token = &rest[..end];
-        let color = if token == "true" || token == "false" {
-            colors.boolean
-        } else if token == "null" {
-            colors.null
-        } else {
-            colors.number
-        };
-        spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
-        rest = rest[end..].trim_start();
     }
 
     Line::from(spans)
@@ -135,6 +97,70 @@ pub fn find_string_end(s: &str) -> usize {
         }
     }
     s.len()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JsonTokenKind {
+    Punctuation,
+    String,
+    Literal,
+}
+
+pub struct JsonTokenIter<'a> {
+    pub rest: &'a str,
+}
+
+impl<'a> Iterator for JsonTokenIter<'a> {
+    type Item = (JsonTokenKind, &'a str);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.rest.is_empty() {
+            return None;
+        }
+
+        let first = self.rest.as_bytes()[0];
+
+        if matches!(first, b':' | b',' | b'{' | b'}' | b'[' | b']') {
+            let token = &self.rest[..1];
+            self.rest = &self.rest[1..];
+            return Some((JsonTokenKind::Punctuation, token));
+        }
+
+        if first == b'"' {
+            let end = find_string_end(self.rest);
+            let token = &self.rest[..end];
+            self.rest = &self.rest[end..];
+            return Some((JsonTokenKind::String, token));
+        }
+
+        let end = self
+            .rest
+            .find(['"', ':', ',', '{', '}', '[', ']'])
+            .unwrap_or(self.rest.len());
+        if end == 0 {
+            self.rest = &self.rest[1..];
+            return self.next();
+        }
+        let token = &self.rest[..end];
+        self.rest = &self.rest[end..];
+        Some((JsonTokenKind::Literal, token))
+    }
+}
+
+pub fn iter_json_tokens(input: &str) -> JsonTokenIter<'_> {
+    JsonTokenIter { rest: input }
+}
+
+pub fn json_literal_color(token: &str, colors: &HighlightColors) -> Color {
+    if token == "true" || token == "false" {
+        colors.boolean
+    } else if token == "null" {
+        colors.null
+    } else if token.trim().parse::<f64>().is_ok() {
+        colors.number
+    } else {
+        Color::White
+    }
 }
 
 #[cfg(test)]

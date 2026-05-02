@@ -13,8 +13,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use serde_json::Value;
-
 use crate::filter::*;
 use crate::highlight::{HighlightColors, highlight_line};
 use crate::input::LineSource;
@@ -235,69 +233,7 @@ impl App {
     }
 
     fn line_matches_filter(&self, text: &str) -> bool {
-        match self.active_filter_query() {
-            Some(query) => query.segments.iter().all(|seg| match seg {
-                FilterSegment::Plain(c) => self.plain_condition_matches(text, c),
-                FilterSegment::Json(expr) => self.json_expr_matches(text, expr),
-                FilterSegment::LineFormat(_) => true,
-            }),
-            None => true,
-        }
-    }
-
-    fn plain_condition_matches(&self, text: &str, c: &FilterCondition) -> bool {
-        match c.operator {
-            FilterOp::Contains => match &c.value {
-                FilterValue::String(s) => text.contains(s.as_str()),
-                _ => false,
-            },
-            FilterOp::NotContains => match &c.value {
-                FilterValue::String(s) => !text.contains(s.as_str()),
-                _ => false,
-            },
-            FilterOp::RegexMatch => c.regex.as_ref().unwrap().is_match(text),
-            FilterOp::NotRegexMatch => !c.regex.as_ref().unwrap().is_match(text),
-            _ => false,
-        }
-    }
-
-    fn json_expr_matches(&self, text: &str, expr: &JsonExpr) -> bool {
-        match expr {
-            JsonExpr::Condition(c) => self.json_value_matches(text, c),
-            JsonExpr::And(l, r) => {
-                self.json_expr_matches(text, l) && self.json_expr_matches(text, r)
-            }
-            JsonExpr::Or(l, r) => {
-                self.json_expr_matches(text, l) || self.json_expr_matches(text, r)
-            }
-        }
-    }
-
-    fn json_value_matches(&self, text: &str, condition: &FilterCondition) -> bool {
-        let Ok(value) = serde_json::from_str::<Value>(text) else {
-            return false;
-        };
-        let key = condition.json_key.as_deref().unwrap();
-        let target = lookup_json_key(&value, key);
-        let Some(target) = target else {
-            return matches!(
-                condition.operator,
-                FilterOp::JsonNotEquals | FilterOp::JsonNotRegexMatch
-            );
-        };
-        match condition.operator {
-            FilterOp::JsonEquals => compare_json_value(target, &condition.value),
-            FilterOp::JsonNotEquals => !compare_json_value(target, &condition.value),
-            FilterOp::JsonRegexMatch => {
-                let s = json_value_to_string(target);
-                condition.regex.as_ref().unwrap().is_match(&s)
-            }
-            FilterOp::JsonNotRegexMatch => {
-                let s = json_value_to_string(target);
-                !condition.regex.as_ref().unwrap().is_match(&s)
-            }
-            _ => false,
-        }
+        self.active_filter_query().is_none_or(|q| q.matches(text))
     }
 
     fn filtered_indices(&mut self) -> Vec<usize> {
@@ -668,6 +604,12 @@ impl App {
         }
     }
 
+    fn reset_filter_input_state(&mut self) {
+        self.filter_draft = None;
+        self.filter_history_index = None;
+        self.clear_history_search();
+    }
+
     fn apply_filter_submit(&mut self) {
         if let Some(input) = self.filter_input.take() {
             let value = input.value().to_string();
@@ -699,12 +641,7 @@ impl App {
                 }
             }
         }
-        self.filter_draft = None;
-        self.filter_history_index = None;
-        self.history_search_pattern = None;
-        self.history_search_original_input = None;
-        self.history_search_failed = false;
-        self.history_search_start = None;
+        self.reset_filter_input_state();
         let filtered = self.filtered_indices();
         if !filtered.is_empty() {
             if self.selected > filtered[filtered.len() - 1] {
@@ -720,12 +657,7 @@ impl App {
         self.filter_error = None;
         self.live_filter_query = None;
         self.live_filter_error = None;
-        self.filter_draft = None;
-        self.filter_history_index = None;
-        self.history_search_pattern = None;
-        self.history_search_original_input = None;
-        self.history_search_failed = false;
-        self.history_search_start = None;
+        self.reset_filter_input_state();
         self.invalidate_caches();
     }
 
@@ -1200,20 +1132,7 @@ impl App {
                                 spans.push(ts_pad.clone());
                             }
                             if is_selected {
-                                let selected_spans: Vec<Span<'static>> = wrapped_part
-                                    .into_iter()
-                                    .map(|span| {
-                                        Span::styled(
-                                            span.content,
-                                            span.style.patch(
-                                                Style::default()
-                                                    .bg(Color::DarkGray)
-                                                    .add_modifier(Modifier::BOLD),
-                                            ),
-                                        )
-                                    })
-                                    .collect();
-                                spans.extend(selected_spans);
+                                spans.extend(apply_selected_style(wrapped_part));
                             } else {
                                 spans.extend(wrapped_part);
                             }
@@ -1234,20 +1153,7 @@ impl App {
                     let mut spans: Vec<Span<'static>> = vec![ts_span];
                     spans.extend(prefix_span);
                     if is_selected {
-                        let highlighted: Vec<Span<'static>> = content_spans
-                            .into_iter()
-                            .map(|span| {
-                                Span::styled(
-                                    span.content,
-                                    span.style.patch(
-                                        Style::default()
-                                            .bg(Color::DarkGray)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                )
-                            })
-                            .collect();
-                        spans.extend(highlighted);
+                        spans.extend(apply_selected_style(content_spans));
                     } else {
                         spans.extend(content_spans);
                     }

@@ -1,9 +1,9 @@
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use unicode_truncate::UnicodeTruncateStr;
 use unicode_width::UnicodeWidthStr;
 
-use crate::highlight::{HighlightColors, find_string_end};
+use crate::highlight::{HighlightColors, JsonTokenKind, iter_json_tokens, json_literal_color};
 
 /// Return the Unicode display width of a string.
 pub fn display_width(s: &str) -> usize {
@@ -91,61 +91,50 @@ pub fn wrap_line(line: &Line<'_>, width: usize) -> Vec<Vec<Span<'static>>> {
     result
 }
 
+pub fn apply_selected_style(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let selected_bg = Style::default()
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+    spans
+        .into_iter()
+        .map(|span| Span::styled(span.content, span.style.patch(selected_bg)))
+        .collect()
+}
+
 /// Apply lightweight syntax highlighting to a display line for the list view.
 pub fn highlight_display_line(
     line: &str,
     colors: &HighlightColors,
     _is_selected: bool,
 ) -> Vec<Span<'static>> {
-    // Check if it looks like JSON (starts with { or [)
     let trimmed = line.trim_start();
     if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
         return vec![Span::raw(line.to_string())];
     }
 
-    // For list view, just do basic coloring: try to highlight key-value pairs
     let mut spans = Vec::new();
-    let mut rest = line;
+    let mut iter = iter_json_tokens(line);
 
-    while !rest.is_empty() {
-        if rest.starts_with('"') {
-            let end = find_string_end(rest);
-            let s = &rest[..end];
-            // Heuristic: if followed by ':', it's a key
-            let after = rest[end..].trim_start();
-            let is_key = after.starts_with(':');
-            let color = if is_key { colors.key } else { colors.string };
-            spans.push(Span::styled(s.to_string(), Style::default().fg(color)));
-            rest = &rest[end..];
-        } else if rest.starts_with(':')
-            || rest.starts_with(',')
-            || rest.starts_with('{')
-            || rest.starts_with('}')
-            || rest.starts_with('[')
-            || rest.starts_with(']')
-        {
-            spans.push(Span::styled(
-                rest[..1].to_string(),
-                Style::default().fg(colors.punctuation),
-            ));
-            rest = &rest[1..];
-        } else {
-            // Find next special char
-            let end = rest
-                .find(['"', ':', ',', '{', '}', '[', ']'])
-                .unwrap_or(rest.len());
-            let token = &rest[..end];
-            let color = if token == "true" || token == "false" {
-                colors.boolean
-            } else if token == "null" {
-                colors.null
-            } else if token.trim().parse::<f64>().is_ok() {
-                colors.number
-            } else {
-                Color::White
-            };
-            spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
-            rest = &rest[end..];
+    while let Some((kind, token)) = iter.next() {
+        match kind {
+            JsonTokenKind::Punctuation => {
+                spans.push(Span::styled(
+                    token.to_string(),
+                    Style::default().fg(colors.punctuation),
+                ));
+            }
+            JsonTokenKind::String => {
+                let after = iter.rest.trim_start();
+                let is_key = after.starts_with(':');
+                let color = if is_key { colors.key } else { colors.string };
+                spans.push(Span::styled(token.to_string(), Style::default().fg(color)));
+            }
+            JsonTokenKind::Literal => {
+                spans.push(Span::styled(
+                    token.to_string(),
+                    Style::default().fg(json_literal_color(token, colors)),
+                ));
+            }
         }
     }
 
