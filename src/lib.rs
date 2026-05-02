@@ -5,6 +5,7 @@ i18n!("locales", fallback = "en");
 
 pub mod app;
 pub mod filter;
+pub mod filter_state;
 pub mod highlight;
 pub mod input;
 pub mod render;

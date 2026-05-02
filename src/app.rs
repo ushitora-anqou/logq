@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine;
@@ -14,54 +13,16 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::filter::*;
+use crate::filter_state::{FilterState, LogEntry};
 use crate::highlight::{HighlightColors, highlight_line};
 use crate::input::LineSource;
 use crate::render::*;
 
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
-const STDERR_PREFIX: &str = "[stderr] ";
-const SYSTEM_PREFIX: &str = "[logq] ";
 
 struct ShortcutItem {
     key: &'static str,
     desc: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct LogEntry {
-    pub text: String,
-    pub timestamp: String, // "HH:MM:SS.mmm"
-    pub source: LineSource,
-}
-
-fn history_file_path() -> Option<PathBuf> {
-    let base = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(dirs_data_home)
-        .unwrap_or_else(|| PathBuf::from("~/.local/share"));
-    let expanded = expand_tilde(base);
-    if expanded.is_absolute() {
-        Some(expanded.join("logq").join("filter_history"))
-    } else {
-        None
-    }
-}
-
-fn dirs_data_home() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".local").join("share"))
-}
-
-fn expand_tilde(path: PathBuf) -> PathBuf {
-    if path.starts_with("~")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        let remainder = path.strip_prefix("~").unwrap_or(&path);
-        return PathBuf::from(home).join(remainder);
-    }
-    path
 }
 
 #[derive(Default)]
@@ -86,21 +47,10 @@ pub struct App {
     pub selected: usize,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
-    pub filter_input: Option<tui_input::Input>,
     pub max_lines: usize,
     pub should_quit: bool,
     colors: HighlightColors,
-    filter_query: Option<FilterQuery>,
-    filter_error: Option<String>,
-    live_filter_query: Option<FilterQuery>,
-    live_filter_error: Option<String>,
-    filter_history: Vec<String>,
-    filter_history_index: Option<usize>,
-    filter_draft: Option<tui_input::Input>,
-    history_search_pattern: Option<String>,
-    history_search_original_input: Option<tui_input::Input>,
-    history_search_failed: bool,
-    history_search_start: Option<usize>,
+    pub filter: FilterState,
     cache: RenderCache,
     pending_g: bool,
     pub expanded: HashSet<usize>,
@@ -117,23 +67,10 @@ impl App {
             selected: 0,
             scroll_offset: 0,
             auto_scroll: true,
-
-            filter_input: None,
-
             max_lines,
             should_quit: false,
             colors: HighlightColors::default(),
-            filter_query: None,
-            filter_error: None,
-            live_filter_query: None,
-            live_filter_error: None,
-            filter_history: Vec::new(),
-            filter_history_index: None,
-            filter_draft: None,
-            history_search_pattern: None,
-            history_search_original_input: None,
-            history_search_failed: false,
-            history_search_start: None,
+            filter: FilterState::new(),
             cache: RenderCache::default(),
             pending_g: false,
             expanded: HashSet::new(),
@@ -145,24 +82,11 @@ impl App {
     }
 
     pub fn load_history(&mut self) {
-        if let Some(path) = history_file_path()
-            && let Ok(data) = std::fs::read_to_string(&path)
-        {
-            let loaded: Vec<String> = data.lines().map(String::from).collect();
-            if !loaded.is_empty() {
-                self.filter_history = loaded;
-            }
-        }
+        self.filter.load_history();
     }
 
     pub fn save_history(&self) {
-        if let Some(path) = history_file_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let content = self.filter_history.join("\n");
-            let _ = std::fs::write(&path, content);
-        }
+        self.filter.save_history();
     }
 
     pub fn add_line(&mut self, line: String) {
@@ -225,15 +149,11 @@ impl App {
     }
 
     fn active_filter_query(&self) -> Option<&FilterQuery> {
-        if self.filter_input.is_some() {
-            self.live_filter_query.as_ref()
-        } else {
-            self.filter_query.as_ref()
-        }
+        self.filter.active_filter_query()
     }
 
     fn line_matches_filter(&self, text: &str) -> bool {
-        self.active_filter_query().is_none_or(|q| q.matches(text))
+        self.filter.line_matches_filter(text)
     }
 
     fn filtered_indices(&mut self) -> Vec<usize> {
@@ -257,12 +177,7 @@ impl App {
     }
 
     fn active_line_format(&self) -> Option<&LineFormatTemplate> {
-        self.active_filter_query().and_then(|q| {
-            q.segments.iter().find_map(|seg| match seg {
-                FilterSegment::LineFormat(t) => Some(t),
-                _ => None,
-            })
-        })
+        self.filter.active_line_format()
     }
 
     fn display_text_for(&self, idx: usize) -> String {
@@ -276,7 +191,11 @@ impl App {
 
     fn visible_height(&self, area: &Rect) -> usize {
         // Titlebar(1) + status(1) + shortcuts(2) = 4; during filter input add input(1) = 5
-        let overhead: usize = if self.filter_input.is_some() { 5 } else { 4 };
+        let overhead: usize = if self.filter.filter_input.is_some() {
+            5
+        } else {
+            4
+        };
         (area.height as usize).saturating_sub(overhead)
     }
 
@@ -470,7 +389,7 @@ impl App {
                 let content_width = (area.width as usize).saturating_sub(TIMESTAMP_WIDTH);
 
                 // Handle filter input mode
-                if self.filter_input.is_some() {
+                if self.filter.filter_input.is_some() {
                     self.handle_filter_input(key);
                     return true;
                 }
@@ -501,276 +420,29 @@ impl App {
         }
     }
 
-    fn update_live_filter(&mut self) {
-        if let Some(input) = &self.filter_input {
-            match parse_filter_query(input.value()) {
-                Ok(query) if !query.segments.is_empty() => {
-                    self.live_filter_query = Some(query);
-                    self.live_filter_error = None;
-                    self.invalidate_caches();
-                }
-                Ok(_) => {
-                    self.live_filter_query = None;
-                    self.live_filter_error = None;
-                    self.invalidate_caches();
-                }
-                Err(msg) => {
-                    // Keep the previous live_filter_query so results stay filtered
-                    self.live_filter_error = Some(msg);
-                }
-            }
-        }
-    }
-
     fn handle_filter_input(&mut self, key: KeyEvent) {
-        // History search mode: characters go to search pattern
-        if let Some(pattern) = &mut self.history_search_pattern {
-            match key.code {
-                KeyCode::Enter => {
-                    self.apply_filter_submit();
-                }
-                KeyCode::Esc => {
-                    // Accept the current match, exit search only
-                    self.history_search_pattern = None;
-                    self.history_search_original_input = None;
-                    self.history_search_failed = false;
-                    self.history_search_start = None;
-                }
-                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.handle_history_search();
-                }
-                KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.filter_input = self.history_search_original_input.take();
-                    self.history_search_pattern = None;
-                    self.history_search_start = None;
-                    self.history_search_failed = false;
-                    self.update_live_filter();
-                }
-                KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.handle_ctrl_x();
-                }
-                KeyCode::Backspace => {
-                    pattern.pop();
-                    self.history_search_update();
-                }
-                KeyCode::Char(c) => {
-                    pattern.push(c);
-                    self.history_search_update();
-                }
-                _ => {}
-            }
-            return;
+        let (invalidated, toggle_help, quit) = self.filter.handle_filter_key(key);
+        if quit {
+            self.should_quit = true;
         }
-
-        // Normal editing mode
-        match key.code {
-            KeyCode::Enter => {
-                self.apply_filter_submit();
-            }
-            KeyCode::Esc => {
-                self.cancel_filter_input();
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cancel_filter_input();
-            }
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.handle_history_search();
-            }
-            KeyCode::Up => {
-                self.clear_history_search();
-                self.handle_history_up();
-            }
-            KeyCode::Down => {
-                self.clear_history_search();
-                self.handle_history_down();
-            }
-            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.help_scroll = 0;
-                self.show_help = true;
-            }
-            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.handle_ctrl_x();
-            }
-            _ => {
-                // Delegate all other editing to tui-input
-                if let Some(input) = &mut self.filter_input {
-                    use tui_input::backend::crossterm::EventHandler;
-                    if input.handle_event(&Event::Key(key)).is_some() {
-                        self.filter_error = None;
-                        self.update_live_filter();
-                    }
+        if toggle_help {
+            self.help_scroll = 0;
+            self.show_help = true;
+        }
+        if invalidated {
+            self.invalidate_caches();
+        }
+        // After submit, clamp selection to filtered set
+        if self.filter.filter_input.is_none() {
+            let filtered = self.filtered_indices();
+            if !filtered.is_empty() {
+                if self.selected > filtered[filtered.len() - 1] {
+                    self.selected = filtered[filtered.len() - 1];
+                } else if !filtered.contains(&self.selected) {
+                    self.selected = filtered[0];
                 }
             }
         }
-    }
-
-    fn reset_filter_input_state(&mut self) {
-        self.filter_draft = None;
-        self.filter_history_index = None;
-        self.clear_history_search();
-    }
-
-    fn apply_filter_submit(&mut self) {
-        if let Some(input) = self.filter_input.take() {
-            let value = input.value().to_string();
-            match parse_filter_query(&value) {
-                Ok(query) if !query.segments.is_empty() => {
-                    self.filter_query = Some(query);
-                    self.filter_error = None;
-                    self.live_filter_query = None;
-                    self.live_filter_error = None;
-                    self.invalidate_caches();
-                    if self.filter_history.last() != Some(&value) {
-                        self.filter_history.push(value);
-                        if self.filter_history.len() > 100 {
-                            self.filter_history.remove(0);
-                        }
-                    }
-                }
-                Ok(_) => {
-                    self.filter_query = None;
-                    self.filter_error = None;
-                    self.live_filter_query = None;
-                    self.live_filter_error = None;
-                    self.invalidate_caches();
-                }
-                Err(msg) => {
-                    self.filter_error = Some(msg.clone());
-                    self.live_filter_error = Some(msg);
-                    self.filter_input = Some(input);
-                }
-            }
-        }
-        self.reset_filter_input_state();
-        let filtered = self.filtered_indices();
-        if !filtered.is_empty() {
-            if self.selected > filtered[filtered.len() - 1] {
-                self.selected = filtered[filtered.len() - 1];
-            } else if !filtered.contains(&self.selected) {
-                self.selected = filtered[0];
-            }
-        }
-    }
-
-    fn cancel_filter_input(&mut self) {
-        self.filter_input = None;
-        self.filter_error = None;
-        self.live_filter_query = None;
-        self.live_filter_error = None;
-        self.reset_filter_input_state();
-        self.invalidate_caches();
-    }
-
-    fn handle_history_up(&mut self) {
-        if self.filter_history.is_empty() {
-            return;
-        }
-        if self.filter_history_index.is_none() {
-            // Save current input as draft
-            self.filter_draft = self.filter_input.clone();
-        }
-        let current = self
-            .filter_history_index
-            .unwrap_or(self.filter_history.len());
-        if current > 0 {
-            self.filter_history_index = Some(current - 1);
-            self.filter_input = Some(tui_input::Input::new(
-                self.filter_history[current - 1].clone(),
-            ));
-            self.update_live_filter();
-        }
-    }
-
-    fn handle_history_down(&mut self) {
-        if self.filter_history.is_empty() {
-            return;
-        }
-        let current = self
-            .filter_history_index
-            .unwrap_or(self.filter_history.len());
-        if current < self.filter_history.len() - 1 {
-            self.filter_history_index = Some(current + 1);
-            self.filter_input = Some(tui_input::Input::new(
-                self.filter_history[current + 1].clone(),
-            ));
-            self.update_live_filter();
-        } else {
-            // Past the end: restore draft
-            self.filter_history_index = None;
-            self.filter_input = self
-                .filter_draft
-                .clone()
-                .or_else(|| Some(tui_input::Input::default()));
-            self.update_live_filter();
-        }
-    }
-
-    fn handle_history_search(&mut self) {
-        if self.filter_history.is_empty() {
-            return;
-        }
-
-        // Activate search mode if not already active
-        if self.history_search_pattern.is_none() {
-            self.history_search_pattern = self.filter_input.as_ref().map(|i| i.value().to_string());
-            self.history_search_original_input = self.filter_input.clone();
-            self.history_search_start = None;
-        }
-
-        let pattern = self.history_search_pattern.as_deref().unwrap_or("");
-        let start = self
-            .history_search_start
-            .unwrap_or(self.filter_history.len());
-
-        // Search backwards from current position
-        for i in (0..start).rev() {
-            if self.filter_history[i].contains(pattern) {
-                self.filter_input = Some(tui_input::Input::new(self.filter_history[i].clone()));
-                self.history_search_start = Some(i);
-                self.history_search_failed = false;
-                self.update_live_filter();
-                return;
-            }
-        }
-        // Wrap around: try from the end
-        if start < self.filter_history.len() {
-            for i in (start..self.filter_history.len()).rev() {
-                if self.filter_history[i].contains(pattern) {
-                    self.filter_input = Some(tui_input::Input::new(self.filter_history[i].clone()));
-                    self.history_search_start = Some(i);
-                    self.history_search_failed = false;
-                    self.update_live_filter();
-                    return;
-                }
-            }
-        }
-        // No match found
-        self.history_search_failed = true;
-    }
-
-    fn history_search_update(&mut self) {
-        // Re-search from the end of history with the updated pattern
-        let pattern = self.history_search_pattern.as_deref().unwrap_or("");
-        for i in (0..self.filter_history.len()).rev() {
-            if self.filter_history[i].contains(pattern) {
-                self.filter_input = Some(tui_input::Input::new(self.filter_history[i].clone()));
-                self.history_search_start = Some(i);
-                self.history_search_failed = false;
-                self.update_live_filter();
-                return;
-            }
-        }
-        // No match
-        self.history_search_failed = true;
-        self.filter_input = self.history_search_original_input.clone();
-        self.update_live_filter();
-    }
-
-    fn clear_history_search(&mut self) {
-        self.history_search_pattern = None;
-        self.history_search_original_input = None;
-        self.history_search_failed = false;
-        self.history_search_start = None;
     }
 
     fn handle_list_key(
@@ -863,19 +535,11 @@ impl App {
                 self.cache.entry_heights = None;
             }
             (KeyCode::Char('/'), _) => {
-                let initial = self
-                    .filter_query
-                    .as_ref()
-                    .map(|q| q.display_string())
-                    .unwrap_or_default();
-                self.filter_input = Some(tui_input::Input::new(initial));
-                self.filter_history_index = None;
-                self.filter_draft = None;
-                self.clear_history_search();
-                self.update_live_filter();
+                self.filter.start_filter_input();
+                self.filter.update_live_filter();
             }
             (KeyCode::Esc, _) => {
-                self.filter_query = None;
+                self.filter.filter_query = None;
                 self.invalidate_caches();
             }
             (KeyCode::Char('y'), _) => {
@@ -904,7 +568,7 @@ impl App {
         let area = frame.area();
         let (row1, row2, num_cols, key_widths) = self.shortcut_items();
 
-        if self.filter_input.is_some() {
+        if self.filter.filter_input.is_some() {
             // Filter input mode: titlebar + content + input + status + shortcuts
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -925,8 +589,8 @@ impl App {
             self.render_shortcut_bar(frame, chunks[4], &row1, num_cols, &key_widths);
             self.render_shortcut_bar(frame, chunks[5], &row2, num_cols, &key_widths);
 
-            let cursor_x = if let Some(pattern) = &self.history_search_pattern {
-                let label = if self.history_search_failed {
+            let cursor_x = if let Some(pattern) = &self.filter.history_search_pattern {
+                let label = if self.filter.history_search_failed {
                     t!("input.failed_reverse_i_search").to_string()
                 } else {
                     t!("input.reverse_i_search").to_string()
@@ -934,7 +598,7 @@ impl App {
                 let prefix_len = display_width(&label) + 1; // +1 for the "'" suffix
                 (1 + prefix_len + display_width(pattern)) as u16
             } else {
-                let input = self.filter_input.as_ref().unwrap();
+                let input = self.filter.filter_input.as_ref().unwrap();
                 (1 + input.visual_cursor()) as u16
             };
             frame.set_cursor_position((cursor_x, chunks[2].y));
@@ -1067,19 +731,7 @@ impl App {
             let is_expanded = self.is_expanded(idx);
 
             // Source prefix
-            let (prefix_str, prefix_width, prefix_style) = match entry.source {
-                LineSource::Stdout => ("", 0, Style::default()),
-                LineSource::Stderr => (
-                    STDERR_PREFIX,
-                    STDERR_PREFIX.len(),
-                    Style::default().fg(Color::Red),
-                ),
-                LineSource::System => (
-                    SYSTEM_PREFIX,
-                    SYSTEM_PREFIX.len(),
-                    Style::default().fg(Color::Yellow),
-                ),
-            };
+            let (prefix_str, prefix_width, prefix_style) = entry.source_prefix();
 
             // Timestamp span
             let ts_span = Span::styled(
@@ -1172,13 +824,18 @@ impl App {
         let bg = Style::default().bg(Color::DarkGray);
         let width = area.width as usize;
 
-        let mut s: Vec<Span<'static>> = if let Some(pattern) = &self.history_search_pattern {
-            let label = if self.history_search_failed {
+        let mut s: Vec<Span<'static>> = if let Some(pattern) = &self.filter.history_search_pattern {
+            let label = if self.filter.history_search_failed {
                 t!("input.failed_reverse_i_search").to_string()
             } else {
                 t!("input.reverse_i_search").to_string()
             };
-            let matched = self.filter_input.as_ref().map(|i| i.value()).unwrap_or("");
+            let matched = self
+                .filter
+                .filter_input
+                .as_ref()
+                .map(|i| i.value())
+                .unwrap_or("");
             vec![
                 Span::styled(
                     format!(" {}'{}': ", label, pattern),
@@ -1190,7 +847,12 @@ impl App {
                 ),
             ]
         } else {
-            let input = self.filter_input.as_ref().map(|i| i.value()).unwrap_or("");
+            let input = self
+                .filter
+                .filter_input
+                .as_ref()
+                .map(|i| i.value())
+                .unwrap_or("");
             vec![Span::styled(
                 format!(" {}", input),
                 Style::default().fg(Color::White).bg(Color::DarkGray),
@@ -1211,9 +873,10 @@ impl App {
         let width = area.width as usize;
 
         let error = self
+            .filter
             .live_filter_error
             .as_deref()
-            .or(self.filter_error.as_deref());
+            .or(self.filter.filter_error.as_deref());
 
         if let Some(err) = error {
             let err_prefix = t!("status.error_prefix").to_string();
@@ -1236,7 +899,7 @@ impl App {
         if let Some(pos) = filtered.iter().position(|&i| i == self.selected) {
             parts.push(format!("{}/{}", pos + 1, filtered.len()));
         }
-        if self.filter_query.is_some() || self.live_filter_query.is_some() {
+        if self.filter.filter_query.is_some() || self.filter.live_filter_query.is_some() {
             parts.push(t!("status.total", count = self.lines.len()).to_string());
         }
 
@@ -1448,8 +1111,8 @@ impl App {
     }
 
     fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
-        let (row1, row2, num_cols) = if self.filter_input.is_some() {
-            if self.history_search_pattern.is_some() {
+        let (row1, row2, num_cols) = if self.filter.filter_input.is_some() {
+            if self.filter.history_search_pattern.is_some() {
                 (
                     [
                         ShortcutItem {
@@ -1769,7 +1432,7 @@ mod tests {
         app.add_line("{\"name\":\"alice\"}".to_string());
         app.add_line("plain text line".to_string());
         app.add_line("{\"name\":\"bob\"}".to_string());
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("alice".to_string()),
@@ -1786,7 +1449,7 @@ mod tests {
         let mut app = App::new(100);
         app.add_line("hello".to_string());
         app.add_line("world".to_string());
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("xyz".to_string()),
@@ -1802,7 +1465,7 @@ mod tests {
     fn test_filter_clear() {
         let mut app = App::new(100);
         app.add_line("hello".to_string());
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("xyz".to_string()),
@@ -1811,7 +1474,7 @@ mod tests {
             })],
         });
         assert_eq!(app.filtered_indices().len(), 0);
-        app.filter_query = None;
+        app.filter.filter_query = None;
         app.cache.filtered_indices = None;
         assert_eq!(app.filtered_indices().len(), 1);
     }
@@ -1822,7 +1485,7 @@ mod tests {
         app.add_line("error: connection timeout".to_string());
         app.add_line("info: request ok".to_string());
         app.add_line("error: disk full".to_string());
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::RegexMatch,
                 value: FilterValue::String("err.*timeout".to_string()),
@@ -1861,7 +1524,7 @@ mod tests {
         app.add_line("aaa".to_string());
         app.add_line("bbb".to_string());
         app.add_line("aaa2".to_string());
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("aaa".to_string()),
@@ -1927,7 +1590,7 @@ mod tests {
     #[test]
     fn test_ctrl_x_quit_from_filter_input() {
         let mut app = App::new(100);
-        app.filter_input = Some(tui_input::Input::new("test".to_string()));
+        app.filter.filter_input = Some(tui_input::Input::new("test".to_string()));
         app.handle_filter_input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
@@ -1980,7 +1643,7 @@ mod tests {
             }
         }
         // Filter for "match": matches lines 0, 2, 4, 6, 8, 10, 12, 14, 16, 18
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("match".to_string()),
@@ -2060,7 +1723,7 @@ mod tests {
         app.add_line("aaa2".to_string());
         app.add_line("bbb2".to_string());
         app.add_line("aaa3".to_string());
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("aaa".to_string()),
@@ -2097,7 +1760,7 @@ mod tests {
                 i
             ));
         }
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![json(FilterCondition {
                 operator: FilterOp::JsonEquals,
                 value: FilterValue::String("error".to_string()),
@@ -2331,7 +1994,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter("foobar"));
@@ -2349,7 +2015,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter("barbaz"));
@@ -2367,7 +2036,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter("error: timeout"));
@@ -2385,7 +2057,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter("info: ok"));
@@ -2411,7 +2086,10 @@ mod tests {
             ],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter("error: disk full"));
@@ -2450,11 +2128,14 @@ mod tests {
         // Write history
         {
             let app = App {
-                filter_history: vec!["|= \"foo\"".to_string(), "|= \"bar\"".to_string()],
+                filter: FilterState {
+                    filter_history: vec!["|= \"foo\"".to_string(), "|= \"bar\"".to_string()],
+                    ..FilterState::new()
+                },
                 cache: RenderCache::default(),
                 ..App::new(100)
             };
-            let content = app.filter_history.join("\n");
+            let content = app.filter.filter_history.join("\n");
             std::fs::write(&path, &content).unwrap();
         }
 
@@ -2614,7 +2295,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"name":"alice"}"#));
@@ -2631,7 +2315,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(!app.line_matches_filter(r#"{"name":"alice"}"#));
@@ -2648,7 +2335,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"name":"alice"}"#));
@@ -2666,7 +2356,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"age":30}"#));
@@ -2684,7 +2377,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"active":true}"#));
@@ -2703,7 +2399,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"result":null}"#));
@@ -2721,7 +2420,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"user":{"name":"alice"}}"#));
@@ -2739,7 +2441,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(!app.line_matches_filter(r#"{"name":"alice"}"#));
@@ -2756,7 +2461,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         // Key doesn't exist, so "not equals bob" is true
@@ -2774,7 +2482,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(!app.line_matches_filter("plain text line"));
@@ -2791,7 +2502,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"msg":"error: timeout"}"#));
@@ -2809,7 +2523,10 @@ mod tests {
             })],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"count":42}"#));
@@ -2835,7 +2552,10 @@ mod tests {
             ],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"type":"timeout","msg":"error occurred"}"#));
@@ -2893,21 +2613,22 @@ mod tests {
         app.add_line("foo bar line".to_string());
 
         // Start filter input mode with a valid query
-        app.filter_input = Some(tui_input::Input::new(r#"|= "foo""#.to_string()));
-        app.update_live_filter();
-        assert!(app.live_filter_query.is_some());
-        assert!(app.live_filter_error.is_none());
+        app.filter.filter_input = Some(tui_input::Input::new(r#"|= "foo""#.to_string()));
+        app.filter.update_live_filter();
+        app.invalidate_caches();
+        assert!(app.filter.live_filter_query.is_some());
+        assert!(app.filter.live_filter_error.is_none());
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0, 2]);
 
         // Add invalid suffix: parse error, but previous valid query should be kept
-        app.filter_input = Some(tui_input::Input::new(r#"|= "foo" |"#.to_string()));
-        app.update_live_filter();
+        app.filter.filter_input = Some(tui_input::Input::new(r#"|= "foo" |"#.to_string()));
+        app.filter.update_live_filter();
         assert!(
-            app.live_filter_query.is_some(),
+            app.filter.live_filter_query.is_some(),
             "live_filter_query should keep previous valid query on parse error"
         );
-        assert!(app.live_filter_error.is_some());
+        assert!(app.filter.live_filter_error.is_some());
         let filtered = app.filtered_indices();
         assert_eq!(
             filtered,
@@ -2916,10 +2637,11 @@ mod tests {
         );
 
         // Continue typing to make it valid again with two conditions
-        app.filter_input = Some(tui_input::Input::new(r#"|= "foo" |= "bar""#.to_string()));
-        app.update_live_filter();
-        assert!(app.live_filter_query.is_some());
-        assert!(app.live_filter_error.is_none());
+        app.filter.filter_input = Some(tui_input::Input::new(r#"|= "foo" |= "bar""#.to_string()));
+        app.filter.update_live_filter();
+        app.invalidate_caches();
+        assert!(app.filter.live_filter_query.is_some());
+        assert!(app.filter.live_filter_error.is_none());
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![2]);
     }
@@ -2928,10 +2650,10 @@ mod tests {
     fn test_live_filter_no_previous_keeps_none_on_error() {
         let mut app = App::new(100);
         // No previous valid query: error with live_filter_query still None
-        app.filter_input = Some(tui_input::Input::new("|".to_string()));
-        app.update_live_filter();
-        assert!(app.live_filter_query.is_none());
-        assert!(app.live_filter_error.is_some());
+        app.filter.filter_input = Some(tui_input::Input::new("|".to_string()));
+        app.filter.update_live_filter();
+        assert!(app.filter.live_filter_query.is_none());
+        assert!(app.filter.live_filter_error.is_some());
     }
 
     #[test]
@@ -2941,17 +2663,23 @@ mod tests {
         app.add_line("bar line".to_string());
 
         // Set a filter query directly (simulates an already-applied filter)
-        app.filter_query = Some(parse_filter_query(r#"|= "foo""#).unwrap());
-        assert!(app.filter_query.is_some());
-        assert!(app.filter_input.is_none());
+        app.filter.filter_query = Some(parse_filter_query(r#"|= "foo""#).unwrap());
+        assert!(app.filter.filter_query.is_some());
+        assert!(app.filter.filter_input.is_none());
 
         // Press / — should pre-populate with current filter
         app.handle_list_key(KeyCode::Char('/'), KeyModifiers::NONE, 10, 80);
         assert!(
-            app.filter_input.is_some(),
+            app.filter.filter_input.is_some(),
             "filter_input should be set after pressing /"
         );
-        let input_value = app.filter_input.as_ref().unwrap().value().to_string();
+        let input_value = app
+            .filter
+            .filter_input
+            .as_ref()
+            .unwrap()
+            .value()
+            .to_string();
         assert_eq!(
             input_value, r#"|= "foo""#,
             "filter input should be pre-populated with current filter query"
@@ -2963,13 +2691,13 @@ mod tests {
         let mut app = App::new(100);
         app.add_line("foo line".to_string());
 
-        assert!(app.filter_query.is_none());
+        assert!(app.filter.filter_query.is_none());
 
         // Press / — should start with empty input
         app.handle_list_key(KeyCode::Char('/'), KeyModifiers::NONE, 10, 80);
-        assert!(app.filter_input.is_some());
+        assert!(app.filter.filter_input.is_some());
         assert_eq!(
-            app.filter_input.as_ref().unwrap().value(),
+            app.filter.filter_input.as_ref().unwrap().value(),
             "",
             "filter input should be empty when no filter is active"
         );
@@ -3161,7 +2889,10 @@ mod tests {
             ))],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"k1":"foo","k2":"bar"}"#));
@@ -3188,7 +2919,10 @@ mod tests {
             ))],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"k1":"foo","k2":"baz"}"#));
@@ -3223,7 +2957,10 @@ mod tests {
             ))],
         };
         let app = App {
-            filter_query: Some(query),
+            filter: FilterState {
+                filter_query: Some(query),
+                ..FilterState::new()
+            },
             ..App::new(100)
         };
         assert!(app.line_matches_filter(r#"{"type":"timeout","critical":true}"#));
@@ -3318,7 +3055,7 @@ mod tests {
         app.add_line("bar line".to_string());
 
         // Set a committed filter
-        app.filter_query = Some(FilterQuery {
+        app.filter.filter_query = Some(FilterQuery {
             segments: vec![plain(FilterCondition {
                 operator: FilterOp::Contains,
                 value: FilterValue::String("foo".to_string()),
@@ -3329,8 +3066,8 @@ mod tests {
         app.cache.filtered_indices = None;
 
         // Start typing a new filter query
-        app.filter_input = Some(tui_input::Input::new(r#"|= "bar""#.to_string()));
-        app.update_live_filter();
+        app.filter.filter_input = Some(tui_input::Input::new(r#"|= "bar""#.to_string()));
+        app.filter.update_live_filter();
 
         // Render and check breadcrumb shows the live filter
         let backend = TestBackend::new(80, 20);
@@ -3663,7 +3400,7 @@ mod tests {
         app.add_line_with_source("info: request ok".to_string(), LineSource::Stdout);
 
         // Filter should match the text content, not the prefix
-        app.filter_query = Some(parse_filter_query("|= \"error\"").unwrap());
+        app.filter.filter_query = Some(parse_filter_query("|= \"error\"").unwrap());
         app.cache.filtered_indices = None;
 
         let filtered = app.filtered_indices();
@@ -3831,7 +3568,7 @@ mod tests {
         let mut app = App::new(100);
         app.add_line(r#"{"a": 10, "b": "foo"}"#.to_string());
         app.add_line("plain text".to_string());
-        app.filter_query = Some(parse_filter_query(r#"| line_format "{{ .a }}""#).unwrap());
+        app.filter.filter_query = Some(parse_filter_query(r#"| line_format "{{ .a }}""#).unwrap());
         let filtered = app.filtered_indices();
         assert_eq!(filtered, vec![0, 1]);
     }
@@ -3920,7 +3657,7 @@ mod tests {
         app.add_line(r#"{"level":"info","msg":"hello"}"#.to_string());
         app.add_line(r#"{"level":"error","msg":"bad"}"#.to_string());
         // Set a filter that matches "error"
-        app.filter_query = Some(parse_filter_query(r#"| level = "error""#).unwrap());
+        app.filter.filter_query = Some(parse_filter_query(r#"| level = "error""#).unwrap());
         app.invalidate_caches();
         let f = app.filtered_indices();
         assert_eq!(f, vec![1]);

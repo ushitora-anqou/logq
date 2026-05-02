@@ -32,7 +32,7 @@ impl TestApp {
     }
 
     fn clear_filter_input(&mut self) {
-        if let Some(input) = &mut self.app.filter_input {
+        if let Some(input) = &mut self.app.filter.filter_input {
             *input = tui_input::Input::new(String::new());
         }
     }
@@ -383,15 +383,15 @@ fn test_filter_backspace_empty_stays_in_mode() {
 
     // Enter filter mode
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 
     // Backspace on empty input should NOT cancel filter input mode
     t.press(KeyCode::Backspace, KeyModifiers::NONE);
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 
     // Ctrl-C should cancel filter input mode
     t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
-    assert!(t.app.filter_input.is_none());
+    assert!(t.app.filter.filter_input.is_none());
 
     // Status bar should show normal list mode help, not filter input
     t.render();
@@ -415,7 +415,7 @@ fn test_filter_backspace_nonempty_removes_char() {
     // Backspace should remove last char, not cancel
     t.press(KeyCode::Backspace, KeyModifiers::NONE);
     t.render();
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 }
 
 #[test]
@@ -428,11 +428,11 @@ fn test_filter_esc_cancels() {
     for c in "|= \"test\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 
     // Esc should always cancel filter input, even with text
     t.press(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(t.app.filter_input.is_none());
+    assert!(t.app.filter.filter_input.is_none());
 }
 
 #[test]
@@ -486,11 +486,11 @@ fn test_filter_ctrl_c_cancels() {
     for c in "|= \"test\"".chars() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 
     // Ctrl-C should cancel filter input mode
     t.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
-    assert!(t.app.filter_input.is_none());
+    assert!(t.app.filter.filter_input.is_none());
 }
 
 #[test]
@@ -532,7 +532,7 @@ fn test_filter_parse_error_shown() {
     t.render();
 
     // Error should be shown, input preserved
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
     assert!(t.screen_contains("Error:"));
 }
 
@@ -552,7 +552,7 @@ fn test_filter_parse_error_then_fix() {
     t.render();
 
     // Error shown, input preserved
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 
     // Fix: type closing quote
     t.press(KeyCode::Char('"'), KeyModifiers::NONE);
@@ -560,7 +560,7 @@ fn test_filter_parse_error_then_fix() {
     t.render();
 
     // Filter applied
-    assert!(t.app.filter_input.is_none());
+    assert!(t.app.filter.filter_input.is_none());
     assert!(t.screen_contains("[filter:"));
     assert!(t.screen_contains("foobar"));
     assert!(!t.screen_contains("bazqux"));
@@ -578,7 +578,7 @@ fn test_filter_history_stored_on_enter() {
         t.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
     t.press(KeyCode::Enter, KeyModifiers::NONE);
-    assert!(t.app.filter_input.is_none());
+    assert!(t.app.filter.filter_input.is_none());
     t.render();
     assert!(t.screen_contains(r#"[filter: |= "hello"]"#));
 
@@ -629,14 +629,14 @@ fn test_slash_prepopulates_current_filter() {
     // Press / again — should pre-populate with current filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_ref().map(|i| i.value()),
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "hello""#)
     );
 
     // Up arrow should load the previous query from history
     t.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_ref().map(|i| i.value()),
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "hello""#)
     );
 }
@@ -665,32 +665,38 @@ fn test_filter_history_up_down() {
     // Enter filter mode — starts with pre-populated current filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     t.clear_filter_input();
-    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
+    assert_eq!(
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
+        Some("")
+    );
 
     // Up should show the last (combined) query
     t.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_ref().map(|i| i.value()),
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "first" |= "second""#)
     );
 
     // Up again should show the first query
     t.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_ref().map(|i| i.value()),
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "first""#)
     );
 
     // Down should go back to second (combined filter)
     t.press(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(
-        t.app.filter_input.as_ref().map(|i| i.value()),
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "first" |= "second""#)
     );
 
     // Down past end should restore empty draft
     t.press(KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
+    assert_eq!(
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
+        Some("")
+    );
 }
 
 #[test]
@@ -712,9 +718,12 @@ fn test_empty_enter_clears_filter_then_slash_starts_empty() {
     // Open filter, clear pre-populated input, press Enter with empty input — should clear filter
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
     t.clear_filter_input();
-    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
+    assert_eq!(
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
+        Some("")
+    );
     t.press(KeyCode::Enter, KeyModifiers::NONE);
-    assert!(t.app.filter_input.is_none());
+    assert!(t.app.filter.filter_input.is_none());
     t.render();
     assert!(!t.screen_contains("[filter:"));
 
@@ -725,7 +734,10 @@ fn test_empty_enter_clears_filter_then_slash_starts_empty() {
 
     // Press / again — no active filter, so starts empty
     t.press(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(t.app.filter_input.as_ref().map(|i| i.value()), Some(""));
+    assert_eq!(
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
+        Some("")
+    );
 }
 
 #[test]
@@ -821,7 +833,7 @@ fn test_ctrl_r_preserves_search_pattern() {
     t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
 
     // First Ctrl+R should find a match
-    let first_match = t.app.filter_input.clone().unwrap();
+    let first_match = t.app.filter.filter_input.clone().unwrap();
     assert!(
         first_match.value().contains("alpha"),
         "First match should contain 'alpha', got: {}",
@@ -830,7 +842,7 @@ fn test_ctrl_r_preserves_search_pattern() {
 
     // Second Ctrl+R should find a different (older) match
     t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
-    let second_match = t.app.filter_input.clone().unwrap();
+    let second_match = t.app.filter.filter_input.clone().unwrap();
     assert!(
         second_match.value().contains("alpha"),
         "Second match should still contain 'alpha', got: {}",
@@ -872,7 +884,7 @@ fn test_ctrl_r_type_adds_to_pattern() {
     }
 
     // Should match only "alpha" entries, not "beta"
-    let matched = t.app.filter_input.clone().unwrap();
+    let matched = t.app.filter.filter_input.clone().unwrap();
     assert!(
         matched.value().contains("alpha"),
         "Should match 'alpha' filter, got: {}",
@@ -924,6 +936,7 @@ fn test_ctrl_r_backspace_removes_from_pattern() {
     // Should match "alpha"
     assert!(
         t.app
+            .filter
             .filter_input
             .as_ref()
             .unwrap()
@@ -948,6 +961,7 @@ fn test_ctrl_r_backspace_removes_from_pattern() {
     // Should still match "alpha" (contains "alph")
     assert!(
         t.app
+            .filter
             .filter_input
             .as_ref()
             .unwrap()
@@ -984,12 +998,12 @@ fn test_ctrl_g_cancels_search_restores_input() {
     // Ctrl+G should cancel search and restore original input
     t.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     assert_eq!(
-        t.app.filter_input.as_ref().map(|i| i.value()),
+        t.app.filter.filter_input.as_ref().map(|i| i.value()),
         Some(r#"|= "beta""#),
         "Ctrl+G should restore original input"
     );
     // Should still be in filter input mode
-    assert!(t.app.filter_input.is_some());
+    assert!(t.app.filter.filter_input.is_some());
 }
 
 #[test]
@@ -1041,7 +1055,7 @@ fn test_ctrl_r_esc_accepts_stays_in_input() {
 
     // Should still be in filter input mode with the matched entry
     assert!(
-        t.app.filter_input.is_some(),
+        t.app.filter.filter_input.is_some(),
         "Should still be in filter input mode"
     );
 
@@ -1089,7 +1103,7 @@ fn test_ctrl_r_uses_typed_text_as_initial_pattern() {
     t.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
 
     // Should find a history entry containing "alpha", NOT the most recent "|= beta"
-    let matched = t.app.filter_input.clone().unwrap();
+    let matched = t.app.filter.filter_input.clone().unwrap();
     assert!(
         matched.value().contains("alpha"),
         "Should match 'alpha' (initial pattern from typed text), got: {}",
