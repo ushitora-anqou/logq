@@ -94,15 +94,15 @@ impl App {
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                 self.handle_ctrl_x();
             }
-            (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
-                if !self.try_scroll_expanded(true, visible_height, content_width) {
-                    self.move_selection(1, visible_height, content_width);
-                }
+            (KeyCode::Char('j'), _) | (KeyCode::Down, _)
+                if !self.try_scroll_expanded(true, visible_height, content_width) =>
+            {
+                self.move_selection(1, visible_height, content_width);
             }
-            (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
-                if !self.try_scroll_expanded(false, visible_height, content_width) {
-                    self.move_selection(-1, visible_height, content_width);
-                }
+            (KeyCode::Char('k'), _) | (KeyCode::Up, _)
+                if !self.try_scroll_expanded(false, visible_height, content_width) =>
+            {
+                self.move_selection(-1, visible_height, content_width);
             }
             (KeyCode::Char('G'), _) if !filtered.is_empty() => {
                 self.selected = filtered[max_idx];
