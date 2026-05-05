@@ -15,6 +15,7 @@ logq reads lines from stdin or a spawned command and displays them in an interac
 - **Breadcrumb bar**: Shows current context (active filter) at the top of the screen
 - **Non-JSON support**: Lines that aren't valid JSON are displayed as-is
 - **Vim-style scrolling**: `C-d`, `C-u`, `C-f`, `C-b`, `C-e`, `C-y` all move both the viewport and selection
+- **Recording**: Save all received lines to a file for later analysis, even when logq is overloaded. Start via `--record` flag or `:record` command at runtime
 - **Memory-bounded**: Configurable line limit discards oldest lines when exceeded
 - **Internationalization**: UI text (help, shortcuts, status bar, error messages) is automatically displayed in the system locale language. Supported languages: English, Japanese, Chinese (simplified)
 
@@ -51,8 +52,9 @@ logq --file logfile.json
 ### Options
 
 ```
---max-lines <N>  Maximum number of lines to keep in memory (default: 10000)
---file <PATH>    Read from a file instead of stdin or a command
+--max-lines <N>   Maximum number of lines to keep in memory (default: 10000)
+--file <PATH>     Read from a file instead of stdin or a command
+--record <PATH>   Record all received lines to a file
 ```
 
 ## Keybindings
@@ -66,6 +68,7 @@ logq --file logfile.json
 | `Enter`       | Toggle expand/collapse selected |
 | `C-o`         | Expand/collapse all lines       |
 | `/`           | Start filter input              |
+| `:`           | Enter command mode              |
 | `Esc`         | Clear active filter             |
 | `G`           | Jump to latest line (resume auto-scroll) |
 | `gg`          | Jump to first line              |
@@ -132,6 +135,18 @@ Use `| line_format "template"` to customize how JSON lines are displayed. The te
 
 Non-JSON lines are displayed as-is. Missing keys are replaced with empty strings.
 
+### Command mode
+
+Press `:` to enter command mode. Available commands:
+
+| Command            | Action                              |
+|--------------------|-------------------------------------|
+| `:record <PATH>`   | Start recording lines to a file     |
+| `:stoprecord`      | Stop recording                      |
+| `:stop`            | Stop recording (alias)              |
+
+Recording writes all received lines to the specified file in a background thread, so it continues even when logq is overloaded. The titlebar shows `[REC: path]` while recording is active.
+
 ## Examples
 
 ```sh
@@ -143,6 +158,13 @@ logq -- my-script.sh
 
 # Limit to 5000 lines
 cat large-file.ndjson | logq --max-lines 5000
+
+# Record all lines to a file (for later debugging)
+kubectl logs -f my-pod | logq --record /tmp/captured.log
+
+# Start/stop recording at runtime
+# (inside logq) type :record /tmp/debug.log to start
+# (inside logq) type :stoprecord to stop
 
 # Filter with query language
 # (inside logq) type /|~ "err.*timeout" to show only matching lines

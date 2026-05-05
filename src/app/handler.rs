@@ -19,6 +19,12 @@ impl App {
                 let visible_height = self.visible_height(&area);
                 let content_width = (area.width as usize).saturating_sub(TIMESTAMP_WIDTH);
 
+                // Handle command input mode
+                if self.command_input.is_some() {
+                    self.handle_command_input(key);
+                    return true;
+                }
+
                 // Handle filter input mode
                 if self.filter.filter_input.is_some() {
                     self.handle_filter_input(key);
@@ -178,6 +184,10 @@ impl App {
                 self.filter.start_filter_input();
                 self.filter.update_live_filter();
             }
+            (KeyCode::Char(':'), _) => {
+                self.command_input = Some(tui_input::Input::default());
+                self.command_error = None;
+            }
             (KeyCode::Esc, _) => {
                 self.filter.filter_query = None;
                 self.invalidate_caches();
@@ -191,6 +201,61 @@ impl App {
 
     pub fn handle_ctrl_x(&mut self) {
         self.should_quit = true;
+    }
+
+    pub fn handle_command_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let input = self.command_input.take();
+                if let Some(input) = input {
+                    let value = input.value().trim().to_string();
+                    self.execute_command(&value);
+                }
+            }
+            KeyCode::Esc => {
+                self.command_input = None;
+                self.command_error = None;
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.command_input = None;
+                self.command_error = None;
+            }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+            }
+            _ => {
+                if let Some(input) = &mut self.command_input {
+                    use tui_input::backend::crossterm::EventHandler;
+                    if input.handle_event(&Event::Key(key)).is_some() {
+                        self.command_error = None;
+                    }
+                }
+            }
+        }
+    }
+
+    fn execute_command(&mut self, cmd: &str) {
+        let parts: Vec<&str> = cmd.splitn(2, char::is_whitespace).collect();
+        match parts.as_slice() {
+            ["record", path] => {
+                let path = path.trim();
+                if path.is_empty() {
+                    self.command_error = Some(t!("command.error.missing_path").to_string());
+                    return;
+                }
+                if let Err(e) = self.start_recording(std::path::PathBuf::from(path)) {
+                    self.command_error =
+                        Some(t!("command.error.record_failed", error = e.to_string()).to_string());
+                }
+            }
+            ["stoprecord"] | ["stop"] => {
+                self.stop_recording();
+            }
+            [""] => {}
+            _ => {
+                self.command_error = Some(t!("command.error.unknown", cmd = cmd).to_string());
+            }
+        }
     }
 }
 
@@ -699,5 +764,113 @@ mod tests {
         app.filter.update_live_filter();
         assert!(app.filter.live_filter_query.is_none());
         assert!(app.filter.live_filter_error.is_some());
+    }
+
+    // --- command mode tests ---
+
+    #[test]
+    fn test_colon_enters_command_mode() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        assert!(app.command_input.is_none());
+
+        app.handle_list_key(KeyCode::Char(':'), KeyModifiers::NONE, 10, 80);
+        assert!(app.command_input.is_some());
+    }
+
+    #[test]
+    fn test_command_esc_cancels() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        app.command_input = Some(tui_input::Input::new("record test".to_string()));
+        app.command_error = None;
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.command_input.is_none());
+        assert!(app.command_error.is_none());
+    }
+
+    #[test]
+    fn test_command_ctrl_c_cancels() {
+        let mut app = App::new(100);
+        app.add_line("hello".to_string());
+        app.command_input = Some(tui_input::Input::new("record test".to_string()));
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.command_input.is_none());
+    }
+
+    #[test]
+    fn test_command_ctrl_x_quits() {
+        let mut app = App::new(100);
+        app.command_input = Some(tui_input::Input::default());
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_command_unknown_shows_error() {
+        let mut app = App::new(100);
+        app.command_input = Some(tui_input::Input::new("foobar".to_string()));
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.command_input.is_none());
+        assert!(app.command_error.is_some());
+    }
+
+    #[test]
+    fn test_command_record_starts_recording() {
+        let dir = std::env::temp_dir().join("logq_test_cmd_record");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cmd.log");
+
+        let mut app = App::new(100);
+        app.command_input = Some(tui_input::Input::new(format!("record {}", path.display())));
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.command_input.is_none());
+        assert!(app.recorder.is_some());
+        assert!(app.command_error.is_none());
+
+        app.stop_recording();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_command_stoprecord_stops_recording() {
+        let dir = std::env::temp_dir().join("logq_test_cmd_stoprecord");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cmd.log");
+
+        let mut app = App::new(100);
+        app.start_recording(path.clone()).unwrap();
+        assert!(app.recorder.is_some());
+
+        app.command_input = Some(tui_input::Input::new("stoprecord".to_string()));
+        app.handle_command_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.recorder.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_command_record_no_path_shows_error() {
+        let mut app = App::new(100);
+        app.command_input = Some(tui_input::Input::new("record".to_string()));
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.command_error.is_some());
+    }
+
+    #[test]
+    fn test_command_record_empty_path_shows_error() {
+        let mut app = App::new(100);
+        app.command_input = Some(tui_input::Input::new("record   ".to_string()));
+
+        app.handle_command_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.command_error.is_some());
     }
 }

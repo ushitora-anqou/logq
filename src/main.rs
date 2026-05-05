@@ -19,6 +19,10 @@ struct Cli {
     #[arg(long = "file")]
     file: Option<String>,
 
+    /// Record all received lines to a file
+    #[arg(long = "record")]
+    record: Option<String>,
+
     /// Command to execute. Use `logq -- command args` when the command starts with `-`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
@@ -117,6 +121,12 @@ fn main() -> io::Result<()> {
     };
 
     let mut app = App::new(cli.max_lines);
+    if let Some(record_path) = &cli.record
+        && let Err(e) = app.start_recording(std::path::PathBuf::from(record_path))
+    {
+        eprintln!("error: cannot open record file '{}': {}", record_path, e);
+        std::process::exit(1);
+    }
     app.load_history();
     let result = run_app(&mut terminal, &mut app, rx);
 

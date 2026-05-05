@@ -14,6 +14,7 @@ use crate::filter::*;
 use crate::filter_state::{FilterState, LogEntry};
 use crate::highlight::{HighlightColors, highlight_line};
 use crate::input::LineSource;
+use crate::recorder::Recorder;
 use crate::render::*;
 
 const TIMESTAMP_WIDTH: usize = 13; // "HH:MM:SS.mmm "
@@ -56,6 +57,9 @@ pub struct App {
     pub process_exited: bool,
     pub show_help: bool,
     pub(crate) help_scroll: u16,
+    pub(crate) recorder: Option<Recorder>,
+    pub(crate) command_input: Option<tui_input::Input>,
+    pub(crate) command_error: Option<String>,
 }
 
 impl App {
@@ -76,6 +80,9 @@ impl App {
             process_exited: false,
             show_help: false,
             help_scroll: 0,
+            recorder: None,
+            command_input: None,
+            command_error: None,
         }
     }
 
@@ -92,6 +99,11 @@ impl App {
     }
 
     pub fn add_line_with_source(&mut self, line: String, source: LineSource) {
+        // Record to file first (before any heavy processing) for resilience
+        if let Some(recorder) = &self.recorder {
+            recorder.record(&line);
+        }
+
         if source == LineSource::System && line.contains("process exited") {
             self.process_exited = true;
         }
@@ -170,8 +182,9 @@ impl App {
     }
 
     pub(crate) fn visible_height(&self, area: &Rect) -> usize {
-        // Titlebar(1) + status(1) + shortcuts(2) = 4; during filter input add input(1) = 5
-        let overhead: usize = if self.filter.filter_input.is_some() {
+        // Titlebar(1) + status(1) + shortcuts(2) = 4; during filter/command input add input(1) = 5
+        let overhead: usize = if self.filter.filter_input.is_some() || self.command_input.is_some()
+        {
             5
         } else {
             4
@@ -283,6 +296,22 @@ impl App {
         }
         let cache = self.cache.row_layout.as_ref().unwrap();
         (&cache.1, &cache.2)
+    }
+
+    pub fn start_recording(&mut self, path: std::path::PathBuf) -> std::io::Result<()> {
+        // Stop existing recording if any
+        if let Some(recorder) = self.recorder.take() {
+            drop(recorder);
+        }
+        let recorder = Recorder::start(path)?;
+        self.recorder = Some(recorder);
+        Ok(())
+    }
+
+    pub fn stop_recording(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            drop(recorder);
+        }
     }
 
     pub fn yank_selected(&self) -> std::io::Result<()> {
@@ -1742,6 +1771,65 @@ mod tests {
         app.add_line("test".to_string());
         let encoded = base64::engine::general_purpose::STANDARD.encode("test".as_bytes());
         assert_eq!(encoded, "dGVzdA==");
+    }
+
+    // --- recorder tests ---
+
+    #[test]
+    fn test_start_stop_recording() {
+        let dir = std::env::temp_dir().join("logq_test_app_recorder");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.log");
+
+        let mut app = App::new(100);
+        assert!(app.recorder.is_none());
+
+        app.start_recording(path.clone()).unwrap();
+        assert!(app.recorder.is_some());
+
+        app.add_line("recorded line".to_string());
+
+        app.stop_recording();
+        assert!(app.recorder.is_none());
+
+        // Verify file content
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "recorded line\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_no_recorder_no_crash() {
+        let mut app = App::new(100);
+        // add_line without recorder should work fine
+        app.add_line("hello".to_string());
+        assert_eq!(app.lines.len(), 1);
+    }
+
+    #[test]
+    fn test_recorder_records_all_sources() {
+        let dir = std::env::temp_dir().join("logq_test_app_recorder_sources");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.log");
+
+        let mut app = App::new(100);
+        app.start_recording(path.clone()).unwrap();
+
+        app.add_line_with_source("stdout line".to_string(), LineSource::Stdout);
+        app.add_line_with_source("stderr line".to_string(), LineSource::Stderr);
+        app.add_line_with_source("system line".to_string(), LineSource::System);
+
+        app.stop_recording();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("stdout line\n"));
+        assert!(content.contains("stderr line\n"));
+        assert!(content.contains("system line\n"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- line_format tests ---

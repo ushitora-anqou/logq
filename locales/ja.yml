@@ -22,6 +22,7 @@ help.key.expand_collapse_all: "すべて展開/折りたたみ"
 help.key.yank_copy_line: "行をコピー"
 help.key.start_filter_input: "フィルタ入力開始"
 help.key.clear_filter: "フィルタをクリア"
+help.key.command: "コマンドモード"
 help.key.help: "ヘルプ"
 help.key.exit_logq: "logqを終了"
 help.press_esc_to_close: "Esc または ^G で閉じる"
@@ -36,6 +37,7 @@ shortcut.delete_char: "文字削除"
 shortcut.history: "履歴"
 shortcut.search_hist: "履歴検索"
 shortcut.cancel: "取消"
+shortcut.execute: "実行"
 
 # Shortcut bar - normal mode
 shortcut.filter_lines: "行をフィルタ"
@@ -51,6 +53,7 @@ shortcut.full_pg_down: "全頁下"
 status.error_prefix: "エラー: "
 status.exited: "終了"
 status.follow: "追従"
+status.recording: "REC: %{path}"
 status.scroll: "スクロール"
 status.total: "(%{count} 件)"
 
@@ -60,6 +63,7 @@ input.failed_reverse_i_search: "(逆方向検索 失敗)"
 
 # Titlebar
 titlebar.filter_prefix: "[フィルタ: %{query}]"
+titlebar.recording: "[REC: %{path}]"
 
 # Filter query parser errors
 filter.error.expected_dot_after_brace: "line_format テンプレートの '{{' の後に '.' が必要です"
@@ -76,3 +80,8 @@ filter.error.unterminated_escape: "エスケープが終了していません"
 filter.error.invalid_regex: "不正な正規表現: %{err}"
 filter.error.invalid_number: "不正な数値: %{num}"
 filter.error.expected_paren: "')' が必要です"
+
+# Command mode errors
+command.error.missing_path: "ファイルパスがありません"
+command.error.record_failed: "録画失敗: %{error}"
+command.error.unknown: "不明なコマンド: %{cmd}"

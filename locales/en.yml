@@ -22,6 +22,7 @@ help.key.expand_collapse_all: "Expand/collapse all"
 help.key.yank_copy_line: "Yank (copy) line"
 help.key.start_filter_input: "Start filter input"
 help.key.clear_filter: "Clear filter"
+help.key.command: "Command mode"
 help.key.help: "Help"
 help.key.exit_logq: "Exit logq"
 help.press_esc_to_close: "Press Esc or ^G to close"
@@ -36,6 +37,7 @@ shortcut.delete_char: "Delete char"
 shortcut.history: "History"
 shortcut.search_hist: "Search hist"
 shortcut.cancel: "Cancel"
+shortcut.execute: "Execute"
 
 # Shortcut bar - normal mode
 shortcut.filter_lines: "Filter lines"
@@ -51,6 +53,7 @@ shortcut.full_pg_down: "Full pg down"
 status.error_prefix: "Error: "
 status.exited: "EXITED"
 status.follow: "FOLLOW"
+status.recording: "REC: %{path}"
 status.scroll: "SCROLL"
 status.total: "(%{count} total)"
 
@@ -60,6 +63,7 @@ input.failed_reverse_i_search: "(failed reverse-i-search)"
 
 # Titlebar
 titlebar.filter_prefix: "[filter: %{query}]"
+titlebar.recording: "[REC: %{path}]"
 
 # Filter query parser errors
 filter.error.expected_dot_after_brace: "Expected '.' after '{{' in line_format template"
@@ -76,3 +80,8 @@ filter.error.unterminated_escape: "Unterminated escape"
 filter.error.invalid_regex: "Invalid regex: %{err}"
 filter.error.invalid_number: "Invalid number: %{num}"
 filter.error.expected_paren: "Expected ')'"
+
+# Command mode errors
+command.error.missing_path: "Missing file path"
+command.error.record_failed: "Record failed: %{error}"
+command.error.unknown: "Unknown command: %{cmd}"

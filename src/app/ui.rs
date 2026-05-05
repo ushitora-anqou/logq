@@ -13,8 +13,10 @@ impl App {
         let area = frame.area();
         let (row1, row2, num_cols, key_widths) = self.shortcut_items();
 
-        if self.filter.filter_input.is_some() {
-            // Filter input mode: titlebar + content + input + status + shortcuts
+        let input_mode = self.filter.filter_input.is_some() || self.command_input.is_some();
+
+        if input_mode {
+            // Input mode: titlebar + content + input + status + shortcuts
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -42,6 +44,8 @@ impl App {
                 };
                 let prefix_len = display_width(&label) + 1; // +1 for the "'" suffix
                 (1 + prefix_len + display_width(pattern)) as u16
+            } else if let Some(input) = &self.command_input {
+                (2 + input.visual_cursor()) as u16 // +2 for ": " prefix
             } else {
                 let input = self.filter.filter_input.as_ref().unwrap();
                 (1 + input.visual_cursor()) as u16
@@ -83,6 +87,10 @@ impl App {
         let mut center_parts = Vec::new();
         if let Some(q) = self.active_filter_query() {
             center_parts.push(t!("titlebar.filter_prefix", query = q.display_string()).to_string());
+        }
+        if let Some(recorder) = &self.recorder {
+            let path = recorder.path().display().to_string();
+            center_parts.push(t!("titlebar.recording", path = path).to_string());
         }
         let center_text = center_parts.join(" > ");
 
@@ -269,6 +277,23 @@ impl App {
         let bg = Style::default().bg(Color::DarkGray);
         let width = area.width as usize;
 
+        // Command input mode
+        if let Some(input) = &self.command_input {
+            let mut s: Vec<Span<'static>> = vec![Span::styled(
+                format!(":{}", input.value()),
+                Style::default().fg(Color::White).bg(Color::DarkGray),
+            )];
+            let left_len: usize = s.iter().map(|sp| display_width(&sp.content)).sum();
+            let padding = width.saturating_sub(left_len);
+            if padding > 0 {
+                s.push(Span::styled(" ".repeat(padding), bg));
+            }
+            let status = Paragraph::new(Line::from(s));
+            frame.render_widget(status, area);
+            return;
+        }
+
+        // Filter input mode
         let mut s: Vec<Span<'static>> = if let Some(pattern) = &self.filter.history_search_pattern {
             let label = if self.filter.history_search_failed {
                 t!("input.failed_reverse_i_search").to_string()
@@ -317,6 +342,22 @@ impl App {
     fn render_status_line(&mut self, frame: &mut Frame, area: Rect) {
         let width = area.width as usize;
 
+        // Command error takes priority
+        if let Some(err) = &self.command_error {
+            let err_prefix = t!("status.error_prefix").to_string();
+            let full_len = display_width(&err_prefix) + display_width(err) + 1;
+            let spans = vec![
+                Span::styled(
+                    format!("{}{}", err_prefix, err),
+                    Style::default().fg(Color::Red),
+                ),
+                Span::raw(" ".repeat(width.saturating_sub(full_len))),
+            ];
+            let paragraph = Paragraph::new(Line::from(spans));
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
         let error = self
             .filter
             .live_filter_error
@@ -350,6 +391,11 @@ impl App {
 
         if self.process_exited {
             parts.push(t!("status.exited").to_string());
+        }
+
+        if let Some(recorder) = &self.recorder {
+            let path = recorder.path().display().to_string();
+            parts.push(t!("status.recording", path = path).to_string());
         }
 
         if self.auto_scroll {
@@ -492,6 +538,7 @@ impl App {
             (
                 t!("help.section.other").to_string(),
                 vec![
+                    (":", t!("help.key.command").to_string()),
                     ("^G", t!("help.key.help").to_string()),
                     ("^X", t!("help.key.exit_logq").to_string()),
                 ],
@@ -556,7 +603,79 @@ impl App {
     }
 
     fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
-        let (row1, row2, num_cols) = if self.filter.filter_input.is_some() {
+        let (row1, row2, num_cols) = if self.command_input.is_some() {
+            (
+                [
+                    ShortcutItem {
+                        key: "Enter",
+                        desc: t!("shortcut.execute").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "Esc",
+                        desc: t!("shortcut.cancel").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                ],
+                [
+                    ShortcutItem {
+                        key: "^C",
+                        desc: t!("shortcut.cancel").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                ],
+                8,
+            )
+        } else if self.filter.filter_input.is_some() {
             if self.filter.history_search_pattern.is_some() {
                 (
                     [
@@ -760,8 +879,8 @@ impl App {
                         desc: t!("shortcut.filter_lines").to_string(),
                     },
                     ShortcutItem {
-                        key: "Esc",
-                        desc: t!("help.key.clear_filter").to_string(),
+                        key: ":",
+                        desc: t!("help.key.command").to_string(),
                     },
                     ShortcutItem {
                         key: "^X",

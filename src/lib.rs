@@ -8,4 +8,5 @@ pub mod filter;
 pub mod filter_state;
 pub mod highlight;
 pub mod input;
+pub mod recorder;
 pub mod render;

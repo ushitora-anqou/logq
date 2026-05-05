@@ -22,6 +22,7 @@ help.key.expand_collapse_all: "全部展开/折叠"
 help.key.yank_copy_line: "复制行"
 help.key.start_filter_input: "开始过滤输入"
 help.key.clear_filter: "清除过滤"
+help.key.command: "命令模式"
 help.key.help: "帮助"
 help.key.exit_logq: "退出 logq"
 help.press_esc_to_close: "按 Esc 或 ^G 关闭"
@@ -36,6 +37,7 @@ shortcut.delete_char: "删除字符"
 shortcut.history: "历史"
 shortcut.search_hist: "搜索历史"
 shortcut.cancel: "取消"
+shortcut.execute: "执行"
 
 # Shortcut bar - normal mode
 shortcut.filter_lines: "过滤行"
@@ -51,6 +53,7 @@ shortcut.full_pg_down: "整页下"
 status.error_prefix: "错误: "
 status.exited: "已退出"
 status.follow: "跟随"
+status.recording: "REC: %{path}"
 status.scroll: "滚动"
 status.total: "(共 %{count} 条)"
 
@@ -60,6 +63,7 @@ input.failed_reverse_i_search: "(反向搜索 失败)"
 
 # Titlebar
 titlebar.filter_prefix: "[过滤器: %{query}]"
+titlebar.recording: "[REC: %{path}]"
 
 # Filter query parser errors
 filter.error.expected_dot_after_brace: "line_format 模板中 '{{' 后需要 '.'"
@@ -76,3 +80,8 @@ filter.error.unterminated_escape: "转义未结束"
 filter.error.invalid_regex: "无效正则表达式: %{err}"
 filter.error.invalid_number: "无效数字: %{num}"
 filter.error.expected_paren: "需要 ')'"
+
+# Command mode errors
+command.error.missing_path: "缺少文件路径"
+command.error.record_failed: "录制失败: %{error}"
+command.error.unknown: "未知命令: %{cmd}"
