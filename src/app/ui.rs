@@ -83,49 +83,17 @@ impl App {
             .bg(Color::Black)
             .add_modifier(Modifier::REVERSED);
 
-        // Build center text
-        let mut center_parts = Vec::new();
-        if let Some(q) = self.active_filter_query() {
-            center_parts.push(t!("titlebar.filter_prefix", query = q.display_string()).to_string());
-        }
-        if let Some(recorder) = &self.recorder {
-            let path = recorder.path().display().to_string();
-            center_parts.push(t!("titlebar.recording", path = path).to_string());
-        }
-        let center_text = center_parts.join(" > ");
+        let title = format!("logq {}", env!("CARGO_PKG_VERSION"));
+        let title_len = display_width(&title);
 
-        // Layout: "logq" on left, centered status, padding to fill width
-        let left = "logq";
-        let left_len = display_width(left);
-        let center_len = display_width(&center_text);
+        let pad_left = width.saturating_sub(title_len) / 2;
+        let pad_right = width.saturating_sub(title_len).saturating_sub(pad_left);
 
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        spans.push(Span::styled(left.to_string(), reversed));
-
-        // Calculate padding to center the status text
-        let remaining = width.saturating_sub(left_len).saturating_sub(center_len);
-        let pad_left = remaining / 2;
-        let pad_right = remaining - pad_left;
-
-        if !center_text.is_empty() {
-            spans.push(Span::styled(" ".repeat(pad_left), reversed));
-            spans.push(Span::styled(center_text, reversed));
-            spans.push(Span::styled(" ".repeat(pad_right), reversed));
-        } else {
-            spans.push(Span::styled(
-                " ".repeat(width.saturating_sub(left_len)),
-                reversed,
-            ));
-        }
-
-        // Ensure we fill the width exactly
-        let total_len: usize = spans.iter().map(|s| display_width(&s.content)).sum();
-        if total_len < width {
-            spans.push(Span::styled(
-                " ".repeat(width.saturating_sub(total_len)),
-                reversed,
-            ));
-        }
+        let spans = vec![
+            Span::styled(" ".repeat(pad_left), reversed),
+            Span::styled(title, reversed),
+            Span::styled(" ".repeat(pad_right), reversed),
+        ];
 
         let paragraph = Paragraph::new(Line::from(spans));
         frame.render_widget(paragraph, area);
@@ -381,6 +349,14 @@ impl App {
 
         let mut parts = Vec::new();
 
+        if let Some(q) = self.active_filter_query() {
+            parts.push(t!("titlebar.filter_prefix", query = q.display_string()).to_string());
+        }
+        if let Some(recorder) = &self.recorder {
+            let path = recorder.path().display().to_string();
+            parts.push(t!("titlebar.recording", path = path).to_string());
+        }
+
         let filtered = self.filtered_indices();
         if let Some(pos) = filtered.iter().position(|&i| i == self.selected) {
             parts.push(format!("{}/{}", pos + 1, filtered.len()));
@@ -391,11 +367,6 @@ impl App {
 
         if self.process_exited {
             parts.push(t!("status.exited").to_string());
-        }
-
-        if let Some(recorder) = &self.recorder {
-            let path = recorder.path().display().to_string();
-            parts.push(t!("status.recording", path = path).to_string());
         }
 
         if self.auto_scroll {
@@ -964,12 +935,12 @@ mod tests {
 
         assert!(
             rendered.contains(r#"|= "bar""#),
-            "breadcrumb should show live filter query during input, got: {}",
+            "status line should show live filter query during input, got: {}",
             rendered
         );
         assert!(
             !rendered.contains(r#"|= "foo""#),
-            "breadcrumb should NOT show old committed filter during input, got: {}",
+            "status line should NOT show old committed filter during input, got: {}",
             rendered
         );
     }
