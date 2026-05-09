@@ -60,7 +60,6 @@ impl App {
                     Constraint::Min(0),
                     Constraint::Length(1),
                     Constraint::Length(1),
-                    Constraint::Length(1),
                 ])
                 .split(area);
 
@@ -68,7 +67,6 @@ impl App {
             self.render_list(frame, chunks[1]);
             self.render_status_line(frame, chunks[2]);
             self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, &key_widths);
-            self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, &key_widths);
         }
 
         if self.show_help {
@@ -931,28 +929,8 @@ impl App {
             (
                 [
                     ShortcutItem {
-                        key: "j",
+                        key: "j/k",
                         desc: t!("help.key.move_down").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "k",
-                        desc: t!("help.key.move_up").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "^E",
-                        desc: t!("shortcut.one_line_down").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "^Y",
-                        desc: t!("shortcut.one_line_up").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "^D",
-                        desc: t!("shortcut.half_pg_down").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "^U",
-                        desc: t!("shortcut.half_pg_up").to_string(),
                     },
                     ShortcutItem {
                         key: "^B",
@@ -963,22 +941,8 @@ impl App {
                         desc: t!("shortcut.full_pg_down").to_string(),
                     },
                     ShortcutItem {
-                        key: "",
-                        desc: String::new(),
-                    },
-                ],
-                [
-                    ShortcutItem {
-                        key: "gg",
-                        desc: t!("help.key.jump_to_top").to_string(),
-                    },
-                    ShortcutItem {
                         key: "G",
                         desc: t!("help.key.jump_to_end").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "zz",
-                        desc: t!("help.key.center_line").to_string(),
                     },
                     ShortcutItem {
                         key: "Enter",
@@ -993,16 +957,50 @@ impl App {
                         desc: t!("shortcut.filter_lines").to_string(),
                     },
                     ShortcutItem {
-                        key: ":",
-                        desc: t!("help.key.command").to_string(),
-                    },
-                    ShortcutItem {
                         key: "^X",
                         desc: t!("help.key.exit_logq").to_string(),
                     },
                     ShortcutItem {
                         key: "^G",
                         desc: t!("help.key.help").to_string(),
+                    },
+                ],
+                [
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
                     },
                 ],
                 9,
