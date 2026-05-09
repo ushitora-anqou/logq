@@ -93,6 +93,23 @@ impl App {
         false
     }
 
+    pub fn center_selection(&mut self, visible_height: usize, content_width: usize) {
+        let selected_pos = {
+            let filtered = self.filtered_indices();
+            match filtered.iter().position(|&i| i == self.selected) {
+                Some(p) => p,
+                None => return,
+            }
+        };
+        let (_, prefix_sums) = self.cached_row_layout(content_width);
+        let entry_first_row = prefix_sums[selected_pos];
+        let total_rows = *prefix_sums.last().unwrap_or(&0);
+        let max_offset = total_rows.saturating_sub(visible_height);
+        let target = entry_first_row.saturating_sub(visible_height / 2);
+        self.scroll_offset = target.min(max_offset);
+        self.auto_scroll = false;
+    }
+
     pub fn page_move(
         &mut self,
         delta_rows: isize,
@@ -507,5 +524,80 @@ mod tests {
             app.scroll_offset,
             visible_height,
         );
+    }
+
+    #[test]
+    fn test_center_selection_middle_of_list() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+        let visible_height = 10;
+
+        app.center_selection(visible_height, 67);
+
+        // entry_first_row = 25 (1 row per entry), visible_height / 2 = 5
+        // target = 25 - 5 = 20
+        assert_eq!(app.scroll_offset, 20);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_center_selection_near_top() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 2;
+        app.scroll_offset = 0;
+        let visible_height = 10;
+
+        app.center_selection(visible_height, 67);
+
+        // entry_first_row = 2, visible_height / 2 = 5
+        // target = 2 - 5 = 0 (saturating_sub)
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_center_selection_near_bottom() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 49;
+        app.scroll_offset = 0;
+        let visible_height = 10;
+
+        app.center_selection(visible_height, 67);
+
+        // entry_first_row = 49, visible_height / 2 = 5
+        // target = 44, max_offset = 40
+        // clamp to 40
+        assert_eq!(app.scroll_offset, 40);
+    }
+
+    #[test]
+    fn test_center_selection_disables_auto_scroll() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.auto_scroll = true;
+
+        app.center_selection(10, 67);
+
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_center_selection_empty_lines() {
+        let mut app = App::new(100);
+        app.center_selection(10, 67);
+        // Should not panic
     }
 }

@@ -396,7 +396,7 @@ fn test_filter_backspace_empty_stays_in_mode() {
     // Status bar should show normal list mode help, not filter input
     t.render();
     // List mode shortcuts should be visible (not filter input shortcuts)
-    assert!(t.screen_contains("Exit"));
+    assert!(t.screen_contains("Expand") || t.screen_contains("^X"));
 }
 
 #[test]

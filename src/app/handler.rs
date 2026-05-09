@@ -96,6 +96,9 @@ impl App {
         let prev_pending_g = self.pending_g;
         self.pending_g = false;
 
+        let prev_pending_z = self.pending_z;
+        self.pending_z = false;
+
         match (code, modifiers) {
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                 self.handle_ctrl_x();
@@ -194,6 +197,13 @@ impl App {
             }
             (KeyCode::Char('y'), _) => {
                 let _ = self.yank_selected();
+            }
+            (KeyCode::Char('z'), _) => {
+                if prev_pending_z {
+                    self.center_selection(visible_height, content_width);
+                } else {
+                    self.pending_z = true;
+                }
             }
             _ => {}
         }
@@ -872,5 +882,77 @@ mod tests {
 
         app.handle_command_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.command_error.is_some());
+    }
+
+    #[test]
+    fn test_zz_centers_selection() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+
+        // First 'z' press: pending_z becomes true
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(app.pending_z);
+        assert_eq!(app.selected, 25); // no movement yet
+        assert_eq!(app.scroll_offset, 0); // no scroll change yet
+
+        // Second 'z' press: centers the line
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(!app.pending_z);
+        assert_eq!(app.selected, 25); // selection unchanged
+        assert_eq!(app.scroll_offset, 20); // 25 - 10/2 = 20
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_pending_z_resets_on_other_key() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 5;
+
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(app.pending_z);
+
+        app.handle_list_key(KeyCode::Char('j'), KeyModifiers::NONE, 10, 67);
+        assert!(!app.pending_z);
+        assert_eq!(app.selected, 6); // j moved normally
+    }
+
+    #[test]
+    fn test_pending_z_resets_on_g() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 5;
+
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(app.pending_z);
+
+        // 'g' should reset pending_z and set pending_g
+        app.handle_list_key(KeyCode::Char('g'), KeyModifiers::NONE, 10, 67);
+        assert!(!app.pending_z);
+        assert!(app.pending_g);
+    }
+
+    #[test]
+    fn test_single_z_no_action() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 5;
+        app.scroll_offset = 0;
+
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(app.pending_z);
+        assert_eq!(app.selected, 5);
+        assert_eq!(app.scroll_offset, 0);
     }
 }
