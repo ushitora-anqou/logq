@@ -27,7 +27,10 @@ impl Default for HighlightColors {
 
 /// Highlight a line of JSON or plain text.
 /// Returns a `Text` with syntax highlighting if valid JSON, or plain text otherwise.
+/// When the line starts with valid JSON but has trailing non-JSON content, the JSON
+/// portion is highlighted and the trailing text is appended as plain lines.
 pub fn highlight_line(line: &str, colors: &HighlightColors) -> Text<'static> {
+    // Fast path: the entire line is valid JSON.
     match serde_json::from_str::<Value>(line) {
         Ok(value) => {
             let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| line.to_string());
@@ -37,7 +40,34 @@ pub fn highlight_line(line: &str, colors: &HighlightColors) -> Text<'static> {
                 .collect();
             Text::from(lines)
         }
-        Err(_) => Text::from(Line::from(Span::styled(line.to_string(), Style::default()))),
+        Err(_) => {
+            // Prefix path: try to parse one JSON value from the beginning.
+            let mut stream = serde_json::Deserializer::from_str(line).into_iter::<Value>();
+            match stream.next() {
+                Some(Ok(value)) => {
+                    let offset = stream.byte_offset();
+                    let trailing = line[offset..].trim_end();
+                    if offset > 0 && !trailing.is_empty() {
+                        let pretty = serde_json::to_string_pretty(&value)
+                            .unwrap_or_else(|_| line.to_string());
+                        let mut lines: Vec<Line<'static>> = pretty
+                            .lines()
+                            .map(|l| highlight_json_line(l, colors))
+                            .collect();
+                        for tail_line in trailing.lines() {
+                            lines.push(Line::from(Span::styled(
+                                tail_line.to_string(),
+                                Style::default(),
+                            )));
+                        }
+                        Text::from(lines)
+                    } else {
+                        Text::from(Line::from(Span::styled(line.to_string(), Style::default())))
+                    }
+                }
+                _ => Text::from(Line::from(Span::styled(line.to_string(), Style::default()))),
+            }
+        }
     }
 }
 
@@ -222,5 +252,82 @@ mod tests {
         assert_eq!(find_string_end("\"hello\""), 7);
         assert_eq!(find_string_end("\"he\\\"llo\""), 9);
         assert_eq!(find_string_end("\"\""), 2);
+    }
+
+    #[test]
+    fn test_highlight_json_prefix_with_trailing_text() {
+        let colors = HighlightColors::default();
+        let text = highlight_line(
+            r#"{"msg":"uncaught exception"}make: *** [Makefile:39: run-web2] エラー 1"#,
+            &colors,
+        );
+        assert!(
+            text.lines.len() >= 2,
+            "Expected multiple lines for JSON prefix + trailing text, got {}",
+            text.lines.len()
+        );
+        let last_line_text: String = text
+            .lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            last_line_text.contains("make:"),
+            "Last line should contain the trailing text, got: {}",
+            last_line_text
+        );
+    }
+
+    #[test]
+    fn test_highlight_json_array_prefix_with_tail() {
+        let colors = HighlightColors::default();
+        let text = highlight_line("[1,2,3]some trailing text", &colors);
+        assert!(text.lines.len() >= 2);
+        let last_line_text: String = text
+            .lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(last_line_text.contains("some trailing text"));
+    }
+
+    #[test]
+    fn test_highlight_incomplete_json_is_plain() {
+        let colors = HighlightColors::default();
+        let text = highlight_line("{\"key\":", &colors);
+        assert_eq!(text.lines.len(), 1);
+    }
+
+    #[test]
+    fn test_highlight_json_prefix_with_whitespace_gap() {
+        let colors = HighlightColors::default();
+        let text = highlight_line("{\"a\":1}   trailing", &colors);
+        assert!(text.lines.len() >= 2);
+        let last_line_text: String = text
+            .lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(last_line_text.contains("trailing"));
+    }
+
+    #[test]
+    fn test_highlight_json_prefix_with_multiline_trailing() {
+        let colors = HighlightColors::default();
+        let text = highlight_line("{\"a\":1}line1\nline2", &colors);
+        assert!(
+            text.lines.len() >= 3,
+            "Expected at least 3 lines (1 JSON + 2 trailing), got {}",
+            text.lines.len()
+        );
     }
 }
