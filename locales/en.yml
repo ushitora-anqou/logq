@@ -26,6 +26,7 @@ help.key.clear_filter: "Clear filter"
 help.key.command: "Command mode"
 help.key.help: "Help"
 help.key.exit_logq: "Exit logq"
+help.key.context_view: "Context view"
 help.press_esc_to_close: "Press Esc or ^G to close"
 help.title: " logq help "
 
@@ -39,6 +40,7 @@ shortcut.history: "History"
 shortcut.search_hist: "Search hist"
 shortcut.cancel: "Cancel"
 shortcut.execute: "Execute"
+shortcut.back: "Back"
 
 # Shortcut bar - normal mode
 shortcut.filter_lines: "Filter lines"
@@ -56,6 +58,7 @@ status.exited: "EXITED"
 status.follow: "FOLLOW"
 status.recording: "REC: %{path}"
 status.scroll: "SCROLL"
+status.context: "CONTEXT"
 status.total: "(%{count} total)"
 
 # Input line

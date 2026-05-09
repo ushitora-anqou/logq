@@ -101,6 +101,17 @@ pub fn apply_selected_style(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
         .collect()
 }
 
+pub fn apply_context_center_style(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let context_bg = Style::default()
+        .bg(Color::Cyan)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    spans
+        .into_iter()
+        .map(|span| Span::styled(span.content, span.style.patch(context_bg)))
+        .collect()
+}
+
 /// Apply lightweight syntax highlighting to a display line for the list view.
 pub fn highlight_display_line(
     line: &str,

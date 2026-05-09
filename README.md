@@ -79,6 +79,7 @@ logq --file logfile.json
 | `C-e`         | Scroll down one line            |
 | `C-y`         | Scroll up one line              |
 | `y`           | Copy selected line to clipboard |
+| `c`           | Context view (show all lines around selection, ignoring filter) |
 | `C-x`         | Quit                            |
 
 ### Filter input mode

@@ -61,6 +61,13 @@ pub struct App {
     pub(crate) recorder: Option<Recorder>,
     pub(crate) command_input: Option<tui_input::Input>,
     pub(crate) command_error: Option<String>,
+    pub context_mode: bool,
+    pub(crate) context_center: usize,
+    pub(crate) main_selected: usize,
+    pub(crate) main_scroll_offset: usize,
+    pub(crate) main_auto_scroll: bool,
+    pub(crate) main_expanded: HashSet<usize>,
+    pub(crate) main_expand_all: bool,
 }
 
 impl App {
@@ -85,6 +92,13 @@ impl App {
             recorder: None,
             command_input: None,
             command_error: None,
+            context_mode: false,
+            context_center: 0,
+            main_selected: 0,
+            main_scroll_offset: 0,
+            main_auto_scroll: true,
+            main_expanded: HashSet::new(),
+            main_expand_all: false,
         }
     }
 
@@ -158,6 +172,9 @@ impl App {
     }
 
     fn compute_filtered_indices(&self) -> Vec<usize> {
+        if self.context_mode {
+            return (0..self.lines.len()).collect();
+        }
         match self.active_filter_query() {
             Some(q) if !q.segments.is_empty() => self
                 .lines
@@ -325,6 +342,38 @@ impl App {
         let osc52 = format!("\x1b]52;c;{}\x07", encoded);
         std::io::stderr().write_all(osc52.as_bytes())?;
         std::io::stderr().flush()
+    }
+
+    pub fn enter_context_mode(&mut self, visible_height: usize, content_width: usize) {
+        if self.context_mode || self.lines.is_empty() {
+            return;
+        }
+        self.main_selected = self.selected;
+        self.main_scroll_offset = self.scroll_offset;
+        self.main_auto_scroll = self.auto_scroll;
+        self.main_expanded = std::mem::take(&mut self.expanded);
+        self.main_expand_all = self.expand_all;
+
+        self.context_mode = true;
+        self.context_center = self.selected;
+        self.auto_scroll = false;
+        self.expand_all = false;
+        self.expanded.clear();
+        self.invalidate_caches();
+        self.center_selection(visible_height, content_width);
+    }
+
+    pub fn exit_context_mode(&mut self) {
+        if !self.context_mode {
+            return;
+        }
+        self.context_mode = false;
+        self.selected = self.main_selected;
+        self.scroll_offset = self.main_scroll_offset;
+        self.auto_scroll = self.main_auto_scroll;
+        self.expanded = std::mem::take(&mut self.main_expanded);
+        self.expand_all = self.main_expand_all;
+        self.invalidate_caches();
     }
 
     pub fn poll_events(&self) -> std::io::Result<bool> {
@@ -2005,5 +2054,83 @@ mod tests {
         assert!(app.cache.filtered_indices.is_some());
         let f = app.filtered_indices();
         assert_eq!(f, vec![0, 1, 2]); // indices shifted: [b, c, d] → [0, 1, 2]
+    }
+
+    // --- context mode tests ---
+
+    #[test]
+    fn test_enter_context_mode_shows_all_lines() {
+        let mut app = App::new(100);
+        app.add_line("aaa".to_string());
+        app.add_line("bbb".to_string());
+        app.add_line("aaa2".to_string());
+        app.filter.filter_query = Some(parse_filter_query(r#"|= "aaa""#).unwrap());
+        app.invalidate_caches();
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![0, 2]);
+
+        app.selected = 2;
+        app.enter_context_mode(10, 67);
+        assert!(app.context_mode);
+        assert_eq!(app.context_center, 2);
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_exit_context_mode_restores_state() {
+        let mut app = App::new(100);
+        app.add_line("aaa".to_string());
+        app.add_line("bbb".to_string());
+        app.add_line("aaa2".to_string());
+        app.filter.filter_query = Some(parse_filter_query(r#"|= "aaa""#).unwrap());
+        app.invalidate_caches();
+        app.selected = 2;
+        app.auto_scroll = false;
+        app.expanded.insert(2);
+        app.scroll_offset = 1;
+
+        app.enter_context_mode(10, 67);
+        assert!(app.context_mode);
+
+        // Move around in context mode
+        app.move_selection(-1, 10, 67);
+
+        app.exit_context_mode();
+        assert!(!app.context_mode);
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.scroll_offset, 1);
+        assert!(!app.auto_scroll);
+        assert!(app.expanded.contains(&2));
+        let filtered = app.filtered_indices();
+        assert_eq!(filtered, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_context_mode_empty_lines_noop() {
+        let mut app = App::new(100);
+        assert!(!app.context_mode);
+        app.enter_context_mode(10, 67);
+        assert!(!app.context_mode);
+    }
+
+    #[test]
+    fn test_enter_context_mode_twice_noop() {
+        let mut app = App::new(100);
+        app.add_line("aaa".to_string());
+        app.enter_context_mode(10, 67);
+        assert!(app.context_mode);
+        let center = app.context_center;
+        app.enter_context_mode(10, 67);
+        assert_eq!(app.context_center, center);
+    }
+
+    #[test]
+    fn test_exit_context_mode_when_not_in_noop() {
+        let mut app = App::new(100);
+        app.add_line("aaa".to_string());
+        assert!(!app.context_mode);
+        app.exit_context_mode();
+        assert!(!app.context_mode);
     }
 }

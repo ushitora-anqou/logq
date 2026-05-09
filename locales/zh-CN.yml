@@ -26,6 +26,7 @@ help.key.clear_filter: "清除过滤"
 help.key.command: "命令模式"
 help.key.help: "帮助"
 help.key.exit_logq: "退出 logq"
+help.key.context_view: "上下文视图"
 help.press_esc_to_close: "按 Esc 或 ^G 关闭"
 help.title: " logq 帮助 "
 
@@ -39,6 +40,7 @@ shortcut.history: "历史"
 shortcut.search_hist: "搜索历史"
 shortcut.cancel: "取消"
 shortcut.execute: "执行"
+shortcut.back: "返回"
 
 # Shortcut bar - normal mode
 shortcut.filter_lines: "过滤行"
@@ -56,6 +58,7 @@ status.exited: "已退出"
 status.follow: "跟随"
 status.recording: "REC: %{path}"
 status.scroll: "滚动"
+status.context: "上下文"
 status.total: "(共 %{count} 条)"
 
 # Input line

@@ -78,21 +78,34 @@ impl App {
 
     fn render_titlebar(&self, frame: &mut Frame, area: Rect) {
         let width = area.width as usize;
-        let reversed = Style::default()
-            .fg(Color::White)
-            .bg(Color::Black)
-            .add_modifier(Modifier::REVERSED);
 
-        let title = format!("logq {}", env!("CARGO_PKG_VERSION"));
+        let (title, style) = if self.context_mode {
+            (
+                format!("logq {} [CONTEXT]", env!("CARGO_PKG_VERSION")),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                format!("logq {}", env!("CARGO_PKG_VERSION")),
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::REVERSED),
+            )
+        };
+
         let title_len = display_width(&title);
 
         let pad_left = width.saturating_sub(title_len) / 2;
         let pad_right = width.saturating_sub(title_len).saturating_sub(pad_left);
 
         let spans = vec![
-            Span::styled(" ".repeat(pad_left), reversed),
-            Span::styled(title, reversed),
-            Span::styled(" ".repeat(pad_right), reversed),
+            Span::styled(" ".repeat(pad_left), style),
+            Span::styled(title, style),
+            Span::styled(" ".repeat(pad_right), style),
         ];
 
         let paragraph = Paragraph::new(Line::from(spans));
@@ -149,6 +162,7 @@ impl App {
 
             let entry = &self.lines[idx];
             let is_selected = idx == self.selected;
+            let is_context_center = self.context_mode && idx == self.context_center;
             let is_expanded = self.is_expanded(idx);
 
             // Source prefix
@@ -184,9 +198,14 @@ impl App {
                                 spans.push(ts_pad.clone());
                             }
                             if is_selected {
+                                let bg = if is_context_center {
+                                    Color::Cyan
+                                } else {
+                                    Color::DarkGray
+                                };
                                 spans.push(Span::styled(
                                     " ".repeat(content_width),
-                                    Style::default().bg(Color::DarkGray),
+                                    Style::default().bg(bg),
                                 ));
                             }
                             display_rows.push(Line::from(spans));
@@ -205,7 +224,11 @@ impl App {
                                 spans.push(ts_pad.clone());
                             }
                             if is_selected {
-                                spans.extend(apply_selected_style(wrapped_part));
+                                if is_context_center {
+                                    spans.extend(apply_context_center_style(wrapped_part));
+                                } else {
+                                    spans.extend(apply_selected_style(wrapped_part));
+                                }
                             } else {
                                 spans.extend(wrapped_part);
                             }
@@ -226,7 +249,11 @@ impl App {
                     let mut spans: Vec<Span<'static>> = vec![ts_span];
                     spans.extend(prefix_span);
                     if is_selected {
-                        spans.extend(apply_selected_style(content_spans));
+                        if is_context_center {
+                            spans.extend(apply_context_center_style(content_spans));
+                        } else {
+                            spans.extend(apply_selected_style(content_spans));
+                        }
                     } else {
                         spans.extend(content_spans);
                     }
@@ -371,6 +398,8 @@ impl App {
 
         if self.auto_scroll {
             parts.push(t!("status.follow").to_string());
+        } else if self.context_mode {
+            parts.push(t!("status.context").to_string());
         } else {
             parts.push(t!("status.scroll").to_string());
         }
@@ -495,6 +524,7 @@ impl App {
                     ("Enter", t!("help.key.toggle_expand").to_string()),
                     ("^O", t!("help.key.expand_collapse_all").to_string()),
                     ("y", t!("help.key.yank_copy_line").to_string()),
+                    ("c", t!("help.key.context_view").to_string()),
                 ],
             ),
             (
@@ -575,7 +605,87 @@ impl App {
     }
 
     fn shortcut_items(&self) -> ([ShortcutItem; 9], [ShortcutItem; 9], usize, [usize; 9]) {
-        let (row1, row2, num_cols) = if self.command_input.is_some() {
+        let (row1, row2, num_cols) = if self.context_mode {
+            (
+                [
+                    ShortcutItem {
+                        key: "j",
+                        desc: t!("help.key.move_down").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "k",
+                        desc: t!("help.key.move_up").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^E",
+                        desc: t!("shortcut.one_line_down").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^Y",
+                        desc: t!("shortcut.one_line_up").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^D",
+                        desc: t!("shortcut.half_pg_down").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^U",
+                        desc: t!("shortcut.half_pg_up").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^B",
+                        desc: t!("shortcut.full_pg_up").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^F",
+                        desc: t!("shortcut.full_pg_down").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                ],
+                [
+                    ShortcutItem {
+                        key: "gg",
+                        desc: t!("help.key.jump_to_top").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "G",
+                        desc: t!("help.key.jump_to_end").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "zz",
+                        desc: t!("help.key.center_line").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "Enter",
+                        desc: t!("help.key.toggle_expand").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^O",
+                        desc: t!("shortcut.expand_all").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "Esc",
+                        desc: t!("shortcut.back").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^X",
+                        desc: t!("help.key.exit_logq").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^G",
+                        desc: t!("help.key.help").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "",
+                        desc: String::new(),
+                    },
+                ],
+                9,
+            )
+        } else if self.command_input.is_some() {
             (
                 [
                     ShortcutItem {

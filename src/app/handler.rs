@@ -183,17 +183,24 @@ impl App {
                 self.cache.row_layout = None;
                 self.cache.entry_heights = None;
             }
-            (KeyCode::Char('/'), _) => {
+            (KeyCode::Char('/'), _) if !self.context_mode => {
                 self.filter.start_filter_input();
                 self.filter.update_live_filter();
             }
-            (KeyCode::Char(':'), _) => {
+            (KeyCode::Char(':'), _) if !self.context_mode => {
                 self.command_input = Some(tui_input::Input::default());
                 self.command_error = None;
             }
+            (KeyCode::Char('c'), _) if !self.context_mode => {
+                self.enter_context_mode(visible_height, content_width);
+            }
             (KeyCode::Esc, _) => {
-                self.filter.filter_query = None;
-                self.invalidate_caches();
+                if self.context_mode {
+                    self.exit_context_mode();
+                } else {
+                    self.filter.filter_query = None;
+                    self.invalidate_caches();
+                }
             }
             (KeyCode::Char('y'), _) => {
                 let _ = self.yank_selected();
@@ -954,5 +961,112 @@ mod tests {
         assert!(app.pending_z);
         assert_eq!(app.selected, 5);
         assert_eq!(app.scroll_offset, 0);
+    }
+
+    // --- context mode handler tests ---
+
+    #[test]
+    fn test_c_key_enters_context_mode() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        assert!(!app.context_mode);
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        assert!(app.context_mode);
+    }
+
+    #[test]
+    fn test_esc_exits_context_mode() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        assert!(app.context_mode);
+        app.handle_list_key(KeyCode::Esc, KeyModifiers::NONE, 10, 67);
+        assert!(!app.context_mode);
+    }
+
+    #[test]
+    fn test_c_key_ignored_in_context_mode() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        assert!(app.context_mode);
+        let center = app.context_center;
+        // Pressing c again should not re-enter (noop)
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        assert_eq!(app.context_center, center);
+    }
+
+    #[test]
+    fn test_slash_ignored_in_context_mode() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        app.handle_list_key(KeyCode::Char('/'), KeyModifiers::NONE, 10, 67);
+        assert!(
+            app.filter.filter_input.is_none(),
+            "filter input should not activate in context mode"
+        );
+    }
+
+    #[test]
+    fn test_colon_ignored_in_context_mode() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        app.handle_list_key(KeyCode::Char(':'), KeyModifiers::NONE, 10, 67);
+        assert!(
+            app.command_input.is_none(),
+            "command input should not activate in context mode"
+        );
+    }
+
+    #[test]
+    fn test_esc_clears_filter_in_normal_mode() {
+        use crate::filter::*;
+        let mut app = App::new(100);
+        app.add_line("aaa".to_string());
+        app.add_line("bbb".to_string());
+        app.filter.filter_query = Some(FilterQuery {
+            segments: vec![FilterSegment::Plain(FilterCondition {
+                operator: FilterOp::Contains,
+                value: FilterValue::String("aaa".to_string()),
+                regex: None,
+                json_key: None,
+            })],
+        });
+        app.invalidate_caches();
+        assert!(app.filter.filter_query.is_some());
+        app.handle_list_key(KeyCode::Esc, KeyModifiers::NONE, 10, 67);
+        assert!(app.filter.filter_query.is_none());
+    }
+
+    #[test]
+    fn test_navigation_works_in_context_mode() {
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.add_line(format!("line{}", i));
+        }
+        // selected starts at 0 (update_auto_scroll is called during rendering, not add_line)
+        app.selected = 5;
+        app.auto_scroll = false;
+
+        app.handle_list_key(KeyCode::Char('c'), KeyModifiers::NONE, 10, 67);
+        assert!(app.context_mode);
+        assert_eq!(app.context_center, 5);
+
+        app.handle_list_key(KeyCode::Char('k'), KeyModifiers::NONE, 10, 67);
+        assert_eq!(app.selected, 4);
+        app.handle_list_key(KeyCode::Char('j'), KeyModifiers::NONE, 10, 67);
+        assert_eq!(app.selected, 5);
     }
 }

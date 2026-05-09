@@ -26,6 +26,7 @@ help.key.clear_filter: "フィルタをクリア"
 help.key.command: "コマンドモード"
 help.key.help: "ヘルプ"
 help.key.exit_logq: "logqを終了"
+help.key.context_view: "コンテキスト表示"
 help.press_esc_to_close: "Esc または ^G で閉じる"
 help.title: " logq ヘルプ "
 
@@ -39,6 +40,7 @@ shortcut.history: "履歴"
 shortcut.search_hist: "履歴検索"
 shortcut.cancel: "取消"
 shortcut.execute: "実行"
+shortcut.back: "戻る"
 
 # Shortcut bar - normal mode
 shortcut.filter_lines: "行をフィルタ"
@@ -56,6 +58,7 @@ status.exited: "終了"
 status.follow: "追従"
 status.recording: "REC: %{path}"
 status.scroll: "スクロール"
+status.context: "コンテキスト"
 status.total: "(%{count} 件)"
 
 # Input line
