@@ -13,6 +13,7 @@ fmt:
 	taplo fmt Cargo.toml taplo.toml deny.toml
 
 release:
+	git checkout main
 	@git diff --quiet || (echo "Error: working tree has uncommitted changes" && exit 1)
 	@current=$$(grep '^version = ".*"' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/\1/') && \
 	major=$$(echo $$current | cut -d. -f1) && \
