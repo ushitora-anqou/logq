@@ -514,6 +514,8 @@ impl App {
                     ("^E", t!("help.key.one_line_down").to_string()),
                     ("^Y", t!("help.key.one_line_up").to_string()),
                     ("zz", t!("help.key.center_line").to_string()),
+                    ("zt", t!("help.key.top_line").to_string()),
+                    ("zb", t!("help.key.bottom_line").to_string()),
                 ],
             ),
             (

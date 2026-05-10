@@ -78,6 +78,9 @@ logq --file logfile.json
 | `C-b`         | Scroll up full page             |
 | `C-e`         | Scroll down one line            |
 | `C-y`         | Scroll up one line              |
+| `zz`          | Center current line             |
+| `zt`          | Scroll current line to top      |
+| `zb`          | Scroll current line to bottom   |
 | `y`           | Copy selected line to clipboard |
 | `c`           | Context view (show all lines around selection, ignoring filter) |
 | `C-x`         | Quit                            |

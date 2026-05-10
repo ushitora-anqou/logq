@@ -212,6 +212,12 @@ impl App {
                     self.pending_z = true;
                 }
             }
+            (KeyCode::Char('t'), _) if prev_pending_z => {
+                self.top_selection(visible_height, content_width);
+            }
+            (KeyCode::Char('b'), _) if prev_pending_z => {
+                self.bottom_selection(visible_height, content_width);
+            }
             _ => {}
         }
     }
@@ -961,6 +967,50 @@ mod tests {
         assert!(app.pending_z);
         assert_eq!(app.selected, 5);
         assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_zt_tops_selection() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+
+        // First 'z' press: pending_z becomes true
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(app.pending_z);
+
+        // Second 't' press: tops the line
+        app.handle_list_key(KeyCode::Char('t'), KeyModifiers::NONE, 10, 67);
+        assert!(!app.pending_z);
+        assert_eq!(app.selected, 25);
+        assert_eq!(app.scroll_offset, 25);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_zb_bottoms_selection() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+
+        // First 'z' press: pending_z becomes true
+        app.handle_list_key(KeyCode::Char('z'), KeyModifiers::NONE, 10, 67);
+        assert!(app.pending_z);
+
+        // Second 'b' press: bottoms the line
+        app.handle_list_key(KeyCode::Char('b'), KeyModifiers::NONE, 10, 67);
+        assert!(!app.pending_z);
+        assert_eq!(app.selected, 25);
+        assert_eq!(app.scroll_offset, 16); // 25 + 1 - 10 = 16
+        assert!(!app.auto_scroll);
     }
 
     // --- context mode handler tests ---

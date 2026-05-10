@@ -110,6 +110,40 @@ impl App {
         self.auto_scroll = false;
     }
 
+    pub fn top_selection(&mut self, visible_height: usize, content_width: usize) {
+        let selected_pos = {
+            let filtered = self.filtered_indices();
+            match filtered.iter().position(|&i| i == self.selected) {
+                Some(p) => p,
+                None => return,
+            }
+        };
+        let (_, prefix_sums) = self.cached_row_layout(content_width);
+        let entry_first_row = prefix_sums[selected_pos];
+        let total_rows = *prefix_sums.last().unwrap_or(&0);
+        let max_offset = total_rows.saturating_sub(visible_height);
+        self.scroll_offset = entry_first_row.min(max_offset);
+        self.auto_scroll = false;
+    }
+
+    pub fn bottom_selection(&mut self, visible_height: usize, content_width: usize) {
+        let selected_pos = {
+            let filtered = self.filtered_indices();
+            match filtered.iter().position(|&i| i == self.selected) {
+                Some(p) => p,
+                None => return,
+            }
+        };
+        let (row_layout, prefix_sums) = self.cached_row_layout(content_width);
+        let entry_first_row = prefix_sums[selected_pos];
+        let entry_height = row_layout[selected_pos];
+        let total_rows = *prefix_sums.last().unwrap_or(&0);
+        let max_offset = total_rows.saturating_sub(visible_height);
+        let target = (entry_first_row + entry_height).saturating_sub(visible_height);
+        self.scroll_offset = target.min(max_offset);
+        self.auto_scroll = false;
+    }
+
     pub fn page_move(
         &mut self,
         delta_rows: isize,
@@ -599,5 +633,137 @@ mod tests {
         let mut app = App::new(100);
         app.center_selection(10, 67);
         // Should not panic
+    }
+
+    #[test]
+    fn test_top_selection_middle_of_list() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+        let visible_height = 10;
+
+        app.top_selection(visible_height, 67);
+
+        // entry_first_row = 25, scroll_offset = 25
+        assert_eq!(app.scroll_offset, 25);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_top_selection_near_top() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 2;
+        app.scroll_offset = 0;
+        let visible_height = 10;
+
+        app.top_selection(visible_height, 67);
+
+        // entry_first_row = 2, scroll_offset = 2
+        assert_eq!(app.scroll_offset, 2);
+    }
+
+    #[test]
+    fn test_top_selection_near_bottom() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 49;
+        app.scroll_offset = 0;
+        let visible_height = 10;
+
+        app.top_selection(visible_height, 67);
+
+        // entry_first_row = 49, max_offset = 40
+        // clamp to 40
+        assert_eq!(app.scroll_offset, 40);
+    }
+
+    #[test]
+    fn test_top_selection_disables_auto_scroll() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.auto_scroll = true;
+
+        app.top_selection(10, 67);
+
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_bottom_selection_middle_of_list() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+        let visible_height = 10;
+
+        app.bottom_selection(visible_height, 67);
+
+        // entry_first_row = 25, entry_height = 1
+        // target = 25 + 1 - 10 = 16
+        assert_eq!(app.scroll_offset, 16);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn test_bottom_selection_near_top() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 2;
+        app.scroll_offset = 5;
+        let visible_height = 10;
+
+        app.bottom_selection(visible_height, 67);
+
+        // entry_first_row = 2, entry_height = 1
+        // target = 2 + 1 - 10 = 0 (saturating_sub)
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_bottom_selection_near_bottom() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 49;
+        app.scroll_offset = 0;
+        let visible_height = 10;
+
+        app.bottom_selection(visible_height, 67);
+
+        // entry_first_row = 49, entry_height = 1
+        // target = 49 + 1 - 10 = 40, max_offset = 40
+        assert_eq!(app.scroll_offset, 40);
+    }
+
+    #[test]
+    fn test_bottom_selection_disables_auto_scroll() {
+        let mut app = App::new(100);
+        for i in 0..50 {
+            app.add_line(format!("line{}", i));
+        }
+        app.selected = 25;
+        app.auto_scroll = true;
+
+        app.bottom_selection(10, 67);
+
+        assert!(!app.auto_scroll);
     }
 }
