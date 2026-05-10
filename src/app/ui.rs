@@ -421,7 +421,7 @@ impl App {
         area: Rect,
         items: &[ShortcutItem],
         num_cols: usize,
-        key_widths: &[usize; 9],
+        key_widths: &[usize; 8],
     ) {
         let width = area.width as usize;
 
@@ -604,7 +604,7 @@ impl App {
         );
     }
 
-    fn shortcut_items(&self) -> ([ShortcutItem; 9], [ShortcutItem; 9], usize, [usize; 9]) {
+    fn shortcut_items(&self) -> ([ShortcutItem; 8], [ShortcutItem; 8], usize, [usize; 8]) {
         let (row1, row2, num_cols) = if self.context_mode {
             (
                 [
@@ -640,10 +640,6 @@ impl App {
                         key: "^F",
                         desc: t!("shortcut.full_pg_down").to_string(),
                     },
-                    ShortcutItem {
-                        key: "",
-                        desc: String::new(),
-                    },
                 ],
                 [
                     ShortcutItem {
@@ -678,12 +674,8 @@ impl App {
                         key: "^G",
                         desc: t!("help.key.help").to_string(),
                     },
-                    ShortcutItem {
-                        key: "",
-                        desc: String::new(),
-                    },
                 ],
-                9,
+                8,
             )
         } else if self.command_input.is_some() {
             (
@@ -695,10 +687,6 @@ impl App {
                     ShortcutItem {
                         key: "Esc",
                         desc: t!("shortcut.cancel").to_string(),
-                    },
-                    ShortcutItem {
-                        key: "",
-                        desc: String::new(),
                     },
                     ShortcutItem {
                         key: "",
@@ -758,12 +746,8 @@ impl App {
                         key: "",
                         desc: String::new(),
                     },
-                    ShortcutItem {
-                        key: "",
-                        desc: String::new(),
-                    },
                 ],
-                9,
+                8,
             )
         } else if self.filter.filter_input.is_some() {
             if self.filter.history_search_pattern.is_some() {
@@ -784,10 +768,6 @@ impl App {
                         ShortcutItem {
                             key: "Esc",
                             desc: t!("shortcut.accept_match").to_string(),
-                        },
-                        ShortcutItem {
-                            key: "",
-                            desc: String::new(),
                         },
                         ShortcutItem {
                             key: "",
@@ -839,12 +819,8 @@ impl App {
                             key: "",
                             desc: String::new(),
                         },
-                        ShortcutItem {
-                            key: "",
-                            desc: String::new(),
-                        },
                     ],
-                    9,
+                    8,
                 )
             } else {
                 (
@@ -868,10 +844,6 @@ impl App {
                         ShortcutItem {
                             key: "^G",
                             desc: t!("shortcut.cancel_search").to_string(),
-                        },
-                        ShortcutItem {
-                            key: "",
-                            desc: String::new(),
                         },
                         ShortcutItem {
                             key: "",
@@ -919,12 +891,8 @@ impl App {
                             key: "",
                             desc: String::new(),
                         },
-                        ShortcutItem {
-                            key: "",
-                            desc: String::new(),
-                        },
                     ],
-                    9,
+                    8,
                 )
             }
         } else {
@@ -962,10 +930,6 @@ impl App {
                         key: "^X",
                         desc: t!("help.key.exit_logq").to_string(),
                     },
-                    ShortcutItem {
-                        key: "^G",
-                        desc: t!("help.key.help").to_string(),
-                    },
                 ],
                 [
                     ShortcutItem {
@@ -1000,17 +964,13 @@ impl App {
                         key: "",
                         desc: String::new(),
                     },
-                    ShortcutItem {
-                        key: "",
-                        desc: String::new(),
-                    },
                 ],
-                9,
+                8,
             )
         };
 
         // Compute per-column key widths: max key length between row1 and row2 for each column
-        let key_widths: [usize; 9] =
+        let key_widths: [usize; 8] =
             std::array::from_fn(|i| row1[i].key.len().max(row2[i].key.len()));
 
         (row1, row2, num_cols, key_widths)
