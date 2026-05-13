@@ -6,16 +6,16 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "logq";
-  version = "0.1.3";
+  version = "0.1.4";
 
   src = fetchFromGitHub {
     owner = "ushitora-anqou";
     repo = "logq";
     rev = version;
-    hash = "sha256-+fKi7vfE0CHagSOf9g9TRqIXrSQo35xjIWuQAk0RZoI=";
+    hash = "sha256-jyAnuKf3+LsRYo1map4Dfk3fKFJinssF+WJJd58mlL8=";
   };
 
-  cargoHash = "sha256-yft92g499CsKstqm3gXhfhwb6m0h8XrdiJC9v08xymA=";
+  cargoHash = "sha256-f5HMCh++aj9VSIn92UJukxdPrcGioaqkV3C7pcgp7zI=";
 
   checkFlags = [
     "--skip=test_tui_mode_with_command_no_panic"
