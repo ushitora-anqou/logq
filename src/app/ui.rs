@@ -52,12 +52,13 @@ impl App {
             };
             frame.set_cursor_position((cursor_x, chunks[2].y));
         } else {
-            // Normal mode: titlebar + content + status + shortcuts
+            // Normal mode: titlebar + content + status + shortcuts(2 rows)
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1),
                     Constraint::Min(0),
+                    Constraint::Length(1),
                     Constraint::Length(1),
                     Constraint::Length(1),
                 ])
@@ -67,6 +68,7 @@ impl App {
             self.render_list(frame, chunks[1]);
             self.render_status_line(frame, chunks[2]);
             self.render_shortcut_bar(frame, chunks[3], &row1, num_cols, &key_widths);
+            self.render_shortcut_bar(frame, chunks[4], &row2, num_cols, &key_widths);
         }
 
         if self.show_help {
@@ -899,16 +901,20 @@ impl App {
             (
                 [
                     ShortcutItem {
-                        key: "j/k",
+                        key: "j",
                         desc: t!("help.key.move_down").to_string(),
                     },
                     ShortcutItem {
-                        key: "^B",
-                        desc: t!("shortcut.full_pg_up").to_string(),
+                        key: "k",
+                        desc: t!("help.key.move_up").to_string(),
                     },
                     ShortcutItem {
                         key: "^F",
                         desc: t!("shortcut.full_pg_down").to_string(),
+                    },
+                    ShortcutItem {
+                        key: "^B",
+                        desc: t!("shortcut.full_pg_up").to_string(),
                     },
                     ShortcutItem {
                         key: "G",
@@ -926,19 +932,15 @@ impl App {
                         key: "/",
                         desc: t!("shortcut.filter_lines").to_string(),
                     },
+                ],
+                [
                     ShortcutItem {
                         key: "^X",
                         desc: t!("help.key.exit_logq").to_string(),
                     },
-                ],
-                [
                     ShortcutItem {
-                        key: "",
-                        desc: String::new(),
-                    },
-                    ShortcutItem {
-                        key: "",
-                        desc: String::new(),
+                        key: "^G",
+                        desc: t!("help.key.help").to_string(),
                     },
                     ShortcutItem {
                         key: "",
