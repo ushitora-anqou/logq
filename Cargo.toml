@@ -1,6 +1,6 @@
 [package]
 name = "logq"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 description = "A terminal UI viewer for NDJSON and plain text streams"
