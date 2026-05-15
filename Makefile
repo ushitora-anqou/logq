@@ -35,17 +35,17 @@ release:
 release-nix:
 	@version=$$(grep '^version = ".*"' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/\1/') && \
 	echo "Updating nix/default.nix to version $$version" && \
-	sed -i 's/version = ".*"/version = "'$$version'"/' nix/default.nix && \
+	sed -i 's|version = ".*"|version = "'$$version'"|' nix/default.nix && \
 	echo "Fetching source hash..." && \
-	sed -i '/hash = "/{ /cargoHash/!s/hash = ".*"/hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="/ }' nix/default.nix && \
+	sed -i '/hash = "/{ /cargoHash/!s|hash = ".*"|hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="| }' nix/default.nix && \
 	hash=$$(nix-build -E 'with import <nixpkgs> {}; callPackage ./nix/default.nix {}' 2>&1 | grep -oP 'got:\s+\Ksha256-[A-Za-z0-9+/=]+' | head -1) && \
 	echo "Source hash: $$hash" && \
-	sed -i '/hash = "/{ /cargoHash/!s/hash = ".*"/hash = "'$$hash'"/ }' nix/default.nix && \
+	sed -i '/hash = "/{ /cargoHash/!s|hash = ".*"|hash = "'$$hash'"| }' nix/default.nix && \
 	echo "Fetching cargo hash..." && \
-	sed -i 's/cargoHash = ".*"/cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="/' nix/default.nix && \
+	sed -i 's|cargoHash = ".*"|cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="|' nix/default.nix && \
 	cargoHash=$$(nix-build -E 'with import <nixpkgs> {}; callPackage ./nix/default.nix {}' 2>&1 | grep -oP 'got:\s+\Ksha256-[A-Za-z0-9+/=]+' | head -1) && \
 	echo "Cargo hash: $$cargoHash" && \
-	sed -i 's/cargoHash = ".*"/cargoHash = "'$$cargoHash'"/' nix/default.nix && \
+	sed -i 's|cargoHash = ".*"|cargoHash = "'$$cargoHash'"|' nix/default.nix && \
 	echo "Verifying build..." && \
 	nix-build -E 'with import <nixpkgs> {}; callPackage ./nix/default.nix {}' && \
 	git add nix/default.nix && \
