@@ -943,16 +943,16 @@ impl App {
                         desc: t!("help.key.help").to_string(),
                     },
                     ShortcutItem {
-                        key: "",
-                        desc: String::new(),
+                        key: "y",
+                        desc: t!("help.key.yank_copy_line").to_string(),
                     },
                     ShortcutItem {
-                        key: "",
-                        desc: String::new(),
+                        key: "gg",
+                        desc: t!("help.key.jump_to_top").to_string(),
                     },
                     ShortcutItem {
-                        key: "",
-                        desc: String::new(),
+                        key: "c",
+                        desc: t!("help.key.context_view").to_string(),
                     },
                     ShortcutItem {
                         key: "",
