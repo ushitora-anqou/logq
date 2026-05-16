@@ -25,6 +25,32 @@ impl Default for HighlightColors {
     }
 }
 
+/// Expand `\n` escape sequences inside JSON string values to actual newlines.
+fn expand_newlines_in_json_strings(pretty: &str) -> String {
+    let bytes = pretty.as_bytes();
+    let mut result = String::with_capacity(pretty.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let end = find_string_end(&pretty[i..]);
+            let s = &pretty[i..i + end];
+            let expanded = s.replace("\\n", "\n").replace("\\r", "");
+            result.push_str(&expanded);
+            i += end;
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Pretty-print a JSON value with newlines in string values expanded.
+fn pretty_print_with_newlines(value: &Value) -> String {
+    let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
+    expand_newlines_in_json_strings(&pretty)
+}
+
 /// Highlight a line of JSON or plain text.
 /// Returns a `Text` with syntax highlighting if valid JSON, or plain text otherwise.
 /// When the line starts with valid JSON but has trailing non-JSON content, the JSON
@@ -33,7 +59,7 @@ pub fn highlight_line(line: &str, colors: &HighlightColors) -> Text<'static> {
     // Fast path: the entire line is valid JSON.
     match serde_json::from_str::<Value>(line) {
         Ok(value) => {
-            let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| line.to_string());
+            let pretty = pretty_print_with_newlines(&value);
             let lines: Vec<Line<'static>> = pretty
                 .lines()
                 .map(|l| highlight_json_line(l, colors))
@@ -48,8 +74,7 @@ pub fn highlight_line(line: &str, colors: &HighlightColors) -> Text<'static> {
                     let offset = stream.byte_offset();
                     let trailing = line[offset..].trim_end();
                     if offset > 0 && !trailing.is_empty() {
-                        let pretty = serde_json::to_string_pretty(&value)
-                            .unwrap_or_else(|_| line.to_string());
+                        let pretty = pretty_print_with_newlines(&value);
                         let mut lines: Vec<Line<'static>> = pretty
                             .lines()
                             .map(|l| highlight_json_line(l, colors))
@@ -329,5 +354,42 @@ mod tests {
             "Expected at least 3 lines (1 JSON + 2 trailing), got {}",
             text.lines.len()
         );
+    }
+
+    #[test]
+    fn test_highlight_json_newline_in_string_value() {
+        let colors = HighlightColors::default();
+        // JSON with actual newline characters (\n) in a string value
+        let text = highlight_line("{\"msg\":\"line1\\nline2\\nline3\"}", &colors);
+        let all_text: String = text
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<&str>>()
+            .join("");
+        assert!(
+            all_text.contains("line1") && all_text.contains("line2") && all_text.contains("line3"),
+            "All lines should appear in output, got: {}",
+            all_text
+        );
+        // The string "line1\nline2\nline3" should span multiple lines in the output
+        assert!(
+            text.lines.len() >= 5,
+            "Expected at least 5 lines (opening brace + key line1 + line2 + line3 + closing brace), got {}",
+            text.lines.len()
+        );
+    }
+
+    #[test]
+    fn test_highlight_json_no_newline_in_string_unchanged() {
+        let colors = HighlightColors::default();
+        let text = highlight_line("{\"msg\":\"hello world\"}", &colors);
+        let all_text: String = text
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<&str>>()
+            .join("");
+        assert!(all_text.contains("hello world"));
     }
 }
