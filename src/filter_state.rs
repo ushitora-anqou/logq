@@ -77,6 +77,7 @@ pub struct FilterState {
     pub history_search_original_input: Option<tui_input::Input>,
     pub history_search_failed: bool,
     pub history_search_start: Option<usize>,
+    pub filter_raw_input: Option<String>,
 }
 
 impl Default for FilterState {
@@ -100,6 +101,7 @@ impl FilterState {
             history_search_original_input: None,
             history_search_failed: false,
             history_search_start: None,
+            filter_raw_input: None,
         }
     }
 
@@ -169,11 +171,14 @@ impl FilterState {
     }
 
     pub fn start_filter_input(&mut self) {
-        let initial = self
-            .filter_query
-            .as_ref()
-            .map(|q| q.display_string())
-            .unwrap_or_default();
+        let initial = match &self.filter_raw_input {
+            Some(raw) => raw.clone(),
+            None => self
+                .filter_query
+                .as_ref()
+                .map(|q| q.display_string())
+                .unwrap_or_default(),
+        };
         self.filter_input = Some(tui_input::Input::new(initial));
         self.filter_history_index = None;
         self.filter_draft = None;
@@ -194,6 +199,7 @@ impl FilterState {
                 self.filter_error = None;
                 self.live_filter_query = None;
                 self.live_filter_error = None;
+                self.filter_raw_input = Some(value.clone());
                 if self.filter_history.last() != Some(&value) {
                     self.filter_history.push(value);
                     if self.filter_history.len() > 100 {
@@ -208,6 +214,7 @@ impl FilterState {
                 self.filter_error = None;
                 self.live_filter_query = None;
                 self.live_filter_error = None;
+                self.filter_raw_input = None;
                 self.reset_filter_input_state();
                 true
             }
@@ -440,5 +447,63 @@ impl FilterState {
                 (invalidated, false, false)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_text_filter_preserves_raw_input() {
+        let mut state = FilterState::new();
+        state.filter_input = Some(tui_input::Input::new("MSG".to_string()));
+        assert!(state.apply_filter_submit());
+
+        assert!(state.filter_query.is_some());
+        assert_eq!(state.filter_raw_input.as_deref(), Some("MSG"));
+
+        state.start_filter_input();
+        assert_eq!(state.filter_input.as_ref().unwrap().value(), "MSG");
+    }
+
+    #[test]
+    fn explicit_operator_filter_preserves_raw_input() {
+        let mut state = FilterState::new();
+        state.filter_input = Some(tui_input::Input::new("|= \"MSG\"".to_string()));
+        assert!(state.apply_filter_submit());
+
+        assert!(state.filter_query.is_some());
+        assert_eq!(state.filter_raw_input.as_deref(), Some("|= \"MSG\""));
+
+        state.start_filter_input();
+        assert_eq!(state.filter_input.as_ref().unwrap().value(), "|= \"MSG\"");
+    }
+
+    #[test]
+    fn empty_filter_clears_raw_input() {
+        let mut state = FilterState::new();
+        state.filter_input = Some(tui_input::Input::new("MSG".to_string()));
+        assert!(state.apply_filter_submit());
+        assert!(state.filter_raw_input.is_some());
+
+        state.filter_input = Some(tui_input::Input::new(String::new()));
+        assert!(state.apply_filter_submit());
+        assert!(state.filter_raw_input.is_none());
+    }
+
+    #[test]
+    fn cancel_preserves_existing_raw_input() {
+        let mut state = FilterState::new();
+        state.filter_input = Some(tui_input::Input::new("MSG".to_string()));
+        assert!(state.apply_filter_submit());
+        assert_eq!(state.filter_raw_input.as_deref(), Some("MSG"));
+
+        state.start_filter_input();
+        state.cancel_filter_input();
+        assert_eq!(state.filter_raw_input.as_deref(), Some("MSG"));
+
+        state.start_filter_input();
+        assert_eq!(state.filter_input.as_ref().unwrap().value(), "MSG");
     }
 }
