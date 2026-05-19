@@ -115,15 +115,42 @@ pub fn spawn_line_reader(command: Option<Vec<String>>, stdin_file: Option<File>)
     }
 }
 
+fn bytes_to_line(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => {
+            let mut s = s.to_string();
+            if s.ends_with('\r') {
+                s.pop();
+            }
+            s
+        }
+        Err(_) => {
+            let mut out = String::with_capacity(bytes.len());
+            for &b in bytes {
+                if b == b'\n' || b == b'\r' {
+                    continue;
+                }
+                if (0x20..0x7f).contains(&b) {
+                    out.push(b as char);
+                } else {
+                    out.push_str(&format!("\\x{:02x}", b));
+                }
+            }
+            out
+        }
+    }
+}
+
 async fn read_lines_with_source<R: AsyncBufReadExt + Unpin>(
     reader: R,
     tx: mpsc::UnboundedSender<InputLine>,
     source: LineSource,
 ) {
-    let mut lines = reader.lines();
+    let mut split = reader.split(b'\n');
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
+        match split.next_segment().await {
+            Ok(Some(bytes)) => {
+                let line = bytes_to_line(&bytes);
                 if tx
                     .send(InputLine {
                         text: line,
@@ -185,5 +212,23 @@ mod tests {
 
         let received: Vec<InputLine> = rx.recv().await.into_iter().collect();
         assert!(received.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_lines_non_utf8_continues_reading() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // "valid\n<0xc6 0xec 0xd3>\nmore\n" — line 2 contains non-UTF-8 bytes
+        let data: Vec<u8> = b"valid\n\xc6\xec\xd3\nmore\n".to_vec();
+        let reader = BufReader::new(Cursor::new(data));
+        tokio::spawn(read_lines_with_source(reader, tx, LineSource::Stdout));
+
+        let mut received = Vec::new();
+        while let Some(line) = rx.recv().await {
+            received.push(line);
+        }
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[0].text, "valid");
+        assert_eq!(received[1].text, "\\xc6\\xec\\xd3");
+        assert_eq!(received[2].text, "more");
     }
 }
