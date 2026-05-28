@@ -103,10 +103,14 @@ fn main() -> io::Result<()> {
         child_pid,
         task_handle,
     } = if let Some(file_path) = &cli.file {
-        let file = File::open(file_path).unwrap_or_else(|e| {
-            eprintln!("error: cannot open file '{}': {}", file_path, e);
-            std::process::exit(1);
-        });
+        let file = match File::open(file_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("error: cannot open file '{}': {}", file_path, e);
+                ratatui::restore();
+                std::process::exit(1);
+            }
+        };
         logq::input::spawn_line_reader(None, Some(file))
     } else if command.is_none() && saved_stdin.is_none() {
         // No input source (TTY without pipe) — skip line reader to avoid fd conflict with crossterm
@@ -125,6 +129,7 @@ fn main() -> io::Result<()> {
         && let Err(e) = app.start_recording(std::path::PathBuf::from(record_path))
     {
         eprintln!("error: cannot open record file '{}': {}", record_path, e);
+        ratatui::restore();
         std::process::exit(1);
     }
     app.load_history();
